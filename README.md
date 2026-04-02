@@ -33,6 +33,8 @@ The **objective** is to minimise total electricity cost over the horizon:
 min  Σ_t  price_buy^t · p_buy^t  −  price_sell^t · p_sell^t
 ```
 
+![optimisation diagram](diagrams/optimization_components.svg)
+
 ### Entities
 
 **Battery**
