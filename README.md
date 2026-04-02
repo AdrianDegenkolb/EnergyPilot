@@ -17,6 +17,10 @@ The scheduling problem is formulated as a **Mixed Integer Linear Program (MILP)*
 
 This rolling-horizon approach means the system continuously reacts to new information without committing to a fixed plan far into the future.
 
+An example solution trajectory from a synthetic scenario is shown below, demonstrating how the battery charges during low-price hours 
+and discharges when prices peak, while the heat pump pre-heats the building in anticipation of high prices later in the day.
+![example_solution](diagrams/mpc_test_results.png)
+
 ## Energy Model
 
 Each controllable asset in the household is modelled as an **entity** with its own decision variable, physical dynamics, and constraints. The grid is not explicitly modelled as a network — instead, a single power balance equation ties everything together:

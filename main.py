@@ -243,7 +243,7 @@ def plot_results(history: dict, dt: float) -> None:
     ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    save_path = Path("outputs/mpc_v2_results.png")
+    save_path = Path("outputs/mpc_test_results.png")
     save_path.parent.mkdir(exist_ok=True)
     plt.savefig(save_path, dpi=150, bbox_inches="tight")
     print("\nPlot saved under " + str(save_path.absolute()))
