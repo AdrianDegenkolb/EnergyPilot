@@ -216,13 +216,27 @@ def plot_results(history: dict, dt: float) -> None:
     ax.grid(True, alpha=0.3)
 
     # Power decisions
+    pos_base = np.zeros_like(history["x_hp"])
+    neg_base = np.zeros_like(history["x_hp"])
+
+    def stack_bar(ax, x, y, pos_base, neg_base, **kwargs):
+        bottom = np.where(y >= 0, pos_base, neg_base)
+        ax.bar(x, y, bottom=bottom, **kwargs)
+
+        # update bases
+        pos_base += np.where(y >= 0, y, 0)
+        neg_base += np.where(y < 0, y, 0)
+
+    # plotting
     ax = axes[2]
-    ax.bar(steps, history["x_hp"], width=0.4*dt, label="Heat pump [kW]", color="#FF9800", alpha=0.8)
-    ax.bar(steps, history["x_bat"], width=0.4*dt, bottom=history["x_hp"],
-           label="Battery [kW]", color="#2196F3", alpha=0.8)
-    ax.bar(steps, history["x_ev"], width=0.4*dt,
-           bottom=np.array(history["x_hp"]) + np.array(history["x_bat"]),
-           label="EV [kW]", color="#4CAF50", alpha=0.8)
+
+    stack_bar(ax, steps, history["x_hp"], pos_base, neg_base,
+              width=0.4 * dt, label="Heat pump [kW]", color="#FF9800", alpha=0.8)
+    stack_bar(ax, steps, history["x_bat"], pos_base, neg_base,
+              width=0.4 * dt, label="Battery [kW]", color="#2196F3", alpha=0.8)
+    stack_bar(ax, steps, history["x_ev"], pos_base, neg_base,
+              width=0.4 * dt, label="EV [kW]", color="#4CAF50", alpha=0.8)
+
     ax.set_ylabel("Power [kW]")
     ax.legend(loc="upper left")
     ax.grid(True, alpha=0.3)
