@@ -84,7 +84,7 @@ def make_forecast_params(
 def run_mpc(
     T_total: int = 12,
     T_horizon: int = 12,
-    dt: float = 0.5,
+    dt: float = 1,
     seed: int = 0,
 ) -> None:
     """
@@ -129,8 +129,8 @@ def run_mpc(
     print(f"{'t':>3}  {'Cost':>7}  {'SoC bat':>8}  {'SoC EV':>7}  {'Temp':>6}  {'p_buy':>6}  {'p_sell':>6}")
     print("─" * 65)
 
-    for step in range(T_total):
-        T_h = min(T_horizon, T_total - step)
+    for step in range(int(T_total / dt)):
+        T_h = min(int(T_horizon / dt), int(T_total / dt - step))
         obs = get_observations(step)
 
         params = make_forecast_params(T_h, dt, obs, rng)
@@ -196,7 +196,7 @@ def plot_results(history: dict, dt: float) -> None:
     steps = np.arange(len(history["p_buy"])) * dt
 
     fig, axes = plt.subplots(4, 1, figsize=(11, 10), sharex=True)
-    fig.suptitle("Household Energy Scheduling — MPC POC", fontsize=13, fontweight="bold")
+    fig.suptitle("Household Energy Scheduling — MPC", fontsize=13, fontweight="bold")
 
     # SoC
     ax = axes[0]
@@ -250,4 +250,4 @@ def plot_results(history: dict, dt: float) -> None:
 
 
 if __name__ == "__main__":
-    run_mpc()
+    run_mpc(dt=0.5, T_total=24, T_horizon=12, seed=42)
