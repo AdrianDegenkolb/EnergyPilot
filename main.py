@@ -10,12 +10,12 @@ At each timestep:
 """
 from pathlib import Path
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
+from optimization.entities import Battery, ElectricVehicle, HeatPump, BaseLoad, PVGenerator
 from optimization.forecast import ForecastParams, ForecastTrajectory
-from optimization.entities import Battery, ElectricVehicle, HeatPump
-from optimization.household import Household
+from optimization.household import Household, OptimisationResult
 
 
 def make_forecast_params(
@@ -84,7 +84,7 @@ def make_forecast_params(
 def run_mpc(
     T_total: int = 12,
     T_horizon: int = 12,
-    dt: float = 1.0,
+    dt: float = 0.5,
     seed: int = 0,
 ) -> None:
     """
@@ -102,7 +102,7 @@ def run_mpc(
     state = {
         "soc_bat": 4.0,
         "soc_ev": 15.0,
-        "temp_in": 18.5,
+        "temp_in": 21.0,
     }
 
     # Simulated real observations (would come from sensors in production)
@@ -156,9 +156,11 @@ def run_mpc(
             lambda_=0.25,
             cop_eta=0.4,
         )
+        base_load = BaseLoad(trajectory.load)
+        pv = PVGenerator(trajectory.pv)
 
-        household = Household(battery=battery, ev=ev, heat_pump=heat_pump)
-        result = household.solve(trajectory)
+        household = Household(entities=[battery, ev, heat_pump, base_load, pv])
+        result: OptimisationResult = household.solve(trajectory)
 
         if not result.success:
             print(f"{step:>3}  {'—':>7}  {state['soc_bat']:>8.2f}  {state['soc_ev']:>7.2f}  "
@@ -166,18 +168,18 @@ def run_mpc(
             continue
 
         # Advance state using first timestep
-        state["soc_bat"] = float(result.soc_bat[1])
-        state["soc_ev"] = float(result.soc_ev[1])
-        state["temp_in"] = float(result.temp_in[1])
+        state["soc_bat"] = float(result.states['soc_bat'][1])
+        state["soc_ev"] = float(result.states['soc_ev'][1])
+        state["temp_in"] = float(result.states['temp_in'][1])
 
         history["soc_bat"].append(state["soc_bat"])
         history["soc_ev"].append(state["soc_ev"])
         history["temp_in"].append(state["temp_in"])
         history["p_buy"].append(float(result.p_buy[0]))
         history["p_sell"].append(float(result.p_sell[0]))
-        history["x_bat"].append(float(result.x_bat[0]))
-        history["x_ev"].append(float(result.x_ev[0]))
-        history["x_hp"].append(float(result.x_hp[0]))
+        history["x_bat"].append(float(result.decisions['x_bat'][0]))
+        history["x_ev"].append(float(result.decisions['x_ev'][0]))
+        history["x_hp"].append(float(result.decisions['x_hp'][0]))
         history["price_buy"].append(obs["price_buy"])
         history["pv"].append(obs["pv"])
         history["load"].append(obs["load"])

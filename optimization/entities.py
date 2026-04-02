@@ -7,7 +7,7 @@ Each entity contributes:
   - additional inequality constraints (e.g. deadlines)
   - terms to the objective function (currently none besides grid cost)
 
-Naming convention for variable indices within the flat optimisation vector:
+Naming convention for variable indices within the flat optimization vector:
   Each entity receives a slice of the variable vector via register().
 """
 
@@ -27,11 +27,11 @@ class VariableRegistry:
     Assigns contiguous index ranges to named variable blocks.
 
     After all entities have registered their variables, n_vars gives
-    the total number of optimisation variables.
+    the total number of optimization variables.
     """
 
     def __init__(self) -> None:
-        """Initialise an empty registry."""
+        """Initialize an empty registry."""
         self._blocks: dict[str, range] = {}
         self._n = 0
 
@@ -97,7 +97,7 @@ class Entity(ABC):
         """
         Register decision and state variables with the registry.
 
-        Called once before optimisation to assign variable indices.
+        Called once before optimization to assign variable indices.
         """
         ...
 
@@ -107,29 +107,63 @@ class Entity(ABC):
         reg: VariableRegistry,
         constraints: Constraints,
         objective: np.ndarray,
+        lb: np.ndarray,
+        ub: np.ndarray,
         T: int,
         dt: float,
     ) -> None:
         """
-        Add constraints and objective terms for this entity.
+        Add constraints, bounds, and objective terms for this entity.
+
+        Bounds are set by writing directly into lb and ub in-place,
+        keeping all variable configuration inside the entity itself.
 
         Args:
             reg: Variable registry with assigned indices.
             constraints: Constraint accumulator to append to.
             objective: Objective coefficient vector to modify in-place.
+            lb: Lower bound vector to modify in-place.
+            ub: Upper bound vector to modify in-place.
             T: Number of timesteps.
             dt: Timestep duration [h].
         """
         ...
 
     @abstractmethod
-    def net_power(self, reg: VariableRegistry, x: np.ndarray, T: int) -> np.ndarray:
+    def net_power(self, n: int, t: int) -> tuple[np.ndarray, float]:
         """
-        Return net power consumption [kW] for each timestep given solution x.
+        Return (coeffs, rhs) describing net power at timestep t.
 
-        Positive = consuming from grid, negative = feeding into grid.
+        Net power is expressed as: coeffs @ x + rhs
+
+        Positive net power = consuming from grid.
+        Negative net power = feeding into grid.
+
+        Controllable entities (Battery, EV, HeatPump) return a non-zero
+        coeffs vector and rhs=0. Passive entities (BaseLoad, PVGenerator)
+        return a zero coeffs vector and a constant rhs value.
+
+        Args:
+            n: Total number of optimization variables.
+            t: Timestep index.
+
+        Returns:
+            coeffs: Coefficient row of length n.
+            rhs: Constant offset [kW].
         """
         ...
+
+    def net_power_value(self, x: np.ndarray, T: int) -> np.ndarray:
+        """
+        Return net power [kW] at each timestep given a solution vector x.
+
+        Args:
+            x: Solution vector of length n.
+            T: Number of timesteps.
+        """
+        n = len(x)
+        return np.array([self.net_power(n, t)[0] @ x + self.net_power(n, t)[1]
+                         for t in range(T)])
 
 
 # ---------------------------------------------------------------------------
@@ -186,11 +220,21 @@ class Battery(Entity):
         reg: VariableRegistry,
         constraints: Constraints,
         objective: np.ndarray,
+        lb: np.ndarray,
+        ub: np.ndarray,
         T: int,
         dt: float,
     ) -> None:
-        """Add SoC dynamics and bounds constraints."""
+        """Add SoC dynamics, variable bounds, and initial SoC constraint."""
         n = objective.size
+
+        # Bounds on decision and state variables
+        for t in range(T):
+            lb[self._x[t]] = -self.discharge_max
+            ub[self._x[t]] = self.charge_max
+        for t in range(T + 1):
+            lb[self._soc[t]] = self.soc_min
+            ub[self._soc[t]] = self.capacity
 
         # Fix initial SoC
         row = np.zeros(n)
@@ -205,21 +249,11 @@ class Battery(Entity):
             row[self._x[t]] = -dt * self.efficiency
             constraints.add_eq(row, 0.0)
 
-    def bounds(self, T: int) -> tuple[np.ndarray, np.ndarray]:
-        """Return (lb, ub) for battery variables."""
-        lb = np.concatenate([
-            np.full(T, -self.discharge_max),
-            np.full(T + 1, self.soc_min),
-        ])
-        ub = np.concatenate([
-            np.full(T, self.charge_max),
-            np.full(T + 1, self.capacity),
-        ])
-        return lb, ub
-
-    def net_power(self, reg: VariableRegistry, x: np.ndarray, T: int) -> np.ndarray:
-        """Return x_bat^t — positive = charging = consuming."""
-        return np.array([x[self._x[t]] for t in range(T)])
+    def net_power(self, n: int, t: int) -> tuple[np.ndarray, float]:
+        """Return coeffs with +1 on x_bat^t (charging = consuming), rhs=0."""
+        coeffs = np.zeros(n)
+        coeffs[self._x[t]] = 1.0
+        return coeffs, 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -275,11 +309,21 @@ class ElectricVehicle(Entity):
         reg: VariableRegistry,
         constraints: Constraints,
         objective: np.ndarray,
+        lb: np.ndarray,
+        ub: np.ndarray,
         T: int,
         dt: float,
     ) -> None:
-        """Add SoC dynamics and optional deadline constraint."""
+        """Add SoC dynamics, variable bounds, and optional deadline constraint."""
         n = objective.size
+
+        # Bounds: no discharging (x_ev >= 0), SoC within [soc_min, capacity]
+        for t in range(T):
+            lb[self._x[t]] = 0.0
+            ub[self._x[t]] = self.charge_max
+        for t in range(T + 1):
+            lb[self._soc[t]] = self.soc_min
+            ub[self._soc[t]] = self.capacity
 
         # Fix initial SoC
         row = np.zeros(n)
@@ -301,21 +345,11 @@ class ElectricVehicle(Entity):
             row[self._soc[deadline]] = 1.0
             constraints.add_ineq(row, self.target_soc, np.inf)
 
-    def bounds(self, T: int) -> tuple[np.ndarray, np.ndarray]:
-        """Return (lb, ub) — no discharging (x_ev >= 0)."""
-        lb = np.concatenate([
-            np.zeros(T),
-            np.full(T + 1, self.soc_min),
-        ])
-        ub = np.concatenate([
-            np.full(T, self.charge_max),
-            np.full(T + 1, self.capacity),
-        ])
-        return lb, ub
-
-    def net_power(self, reg: VariableRegistry, x: np.ndarray, T: int) -> np.ndarray:
-        """Return x_ev^t — always non-negative (only charging)."""
-        return np.array([x[self._x[t]] for t in range(T)])
+    def net_power(self, n: int, t: int) -> tuple[np.ndarray, float]:
+        """Return coeffs with +1 on x_ev^t (charging = consuming), rhs=0."""
+        coeffs = np.zeros(n)
+        coeffs[self._x[t]] = 1.0
+        return coeffs, 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -397,12 +431,19 @@ class HeatPump(Entity):
         reg: VariableRegistry,
         constraints: Constraints,
         objective: np.ndarray,
+        lb: np.ndarray,
+        ub: np.ndarray,
         T: int,
         dt: float,
     ) -> None:
-        """Add temperature dynamics and comfort constraints."""
+        """Add temperature dynamics, comfort constraints, and variable bounds."""
         n = objective.size
         cop = self._compute_cop(T)
+
+        # Bounds: x_hp in [0, max_power], temp_in unbounded (comfort via constraints)
+        for t in range(T):
+            lb[self._x[t]] = 0.0
+            ub[self._x[t]] = self.max_power
 
         # Fix initial temperature
         row = np.zeros(n)
@@ -419,17 +460,95 @@ class HeatPump(Entity):
             rhs = self.lambda_ * dt * self.temp_out[t] / self.C_therm
             constraints.add_eq(row, rhs)
 
-            # Comfort bounds on temp[t+1]
+            # Comfort constraint on temp[t+1]
             row = np.zeros(n)
             row[self._temp[t + 1]] = 1.0
             constraints.add_ineq(row, self.temp_min[t], self.temp_max[t])
 
-    def bounds(self, T: int) -> tuple[np.ndarray, np.ndarray]:
-        """Return (lb, ub) for heat pump variables."""
-        lb = np.concatenate([np.zeros(T), np.full(T + 1, -np.inf)])
-        ub = np.concatenate([np.full(T, self.max_power), np.full(T + 1, np.inf)])
-        return lb, ub
+    def net_power(self, n: int, t: int) -> tuple[np.ndarray, float]:
+        """Return coeffs with +1 on x_hp^t (heat pump = consuming), rhs=0."""
+        coeffs = np.zeros(n)
+        coeffs[self._x[t]] = 1.0
+        return coeffs, 0.0
 
-    def net_power(self, reg: VariableRegistry, x: np.ndarray, T: int) -> np.ndarray:
-        """Return x_hp^t — electrical power consumed."""
-        return np.array([x[self._x[t]] for t in range(T)])
+
+# ---------------------------------------------------------------------------
+# Base Load (uncontrollable)
+# ---------------------------------------------------------------------------
+
+class BaseLoad(Entity):
+    """
+    Uncontrollable base load (e.g. fridge, lighting, standby).
+
+    Has no decision variables — load^t is a fixed forecast parameter.
+    Contributes a constant positive net power at each timestep.
+    """
+
+    def __init__(self, load: np.ndarray) -> None:
+        """
+        Args:
+            load: Forecast load trajectory [kW], shape (T,).
+        """
+        self.load = load
+
+    def register(self, reg: VariableRegistry, T: int) -> None:
+        """No variables to register."""
+        pass
+
+    def contribute(
+        self,
+        reg: VariableRegistry,
+        constraints: Constraints,
+        objective: np.ndarray,
+        lb: np.ndarray,
+        ub: np.ndarray,
+        T: int,
+        dt: float,
+    ) -> None:
+        """No constraints, bounds, or objective terms to add."""
+        pass
+
+    def net_power(self, n: int, t: int) -> tuple[np.ndarray, float]:
+        """Return zero coeffs and load[t] as constant rhs (consuming = positive)."""
+        return np.zeros(n), float(self.load[t])
+
+
+# ---------------------------------------------------------------------------
+# PV Generator (uncontrollable)
+# ---------------------------------------------------------------------------
+
+class PVGenerator(Entity):
+    """
+    Photovoltaic generator.
+
+    Has no decision variables — generation^t is a fixed forecast parameter.
+    Contributes a constant negative net power (feeding into the household).
+    """
+
+    def __init__(self, generation: np.ndarray) -> None:
+        """
+        Args:
+            generation: Forecast PV generation trajectory [kW], shape (T,).
+        """
+        self.generation = generation
+
+    def register(self, reg: VariableRegistry, T: int) -> None:
+        """No variables to register."""
+        pass
+
+    def contribute(
+        self,
+        reg: VariableRegistry,
+        constraints: Constraints,
+        objective: np.ndarray,
+        lb: np.ndarray,
+        ub: np.ndarray,
+        T: int,
+        dt: float,
+    ) -> None:
+        """No constraints, bounds, or objective terms to add."""
+        pass
+
+    def net_power(self, n: int, t: int) -> tuple[np.ndarray, float]:
+        """Return zero coeffs and -generation[t] as constant rhs (producing = negative)."""
+        return np.zeros(n), -float(self.generation[t])
