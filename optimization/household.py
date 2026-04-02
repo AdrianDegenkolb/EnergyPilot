@@ -20,8 +20,8 @@ from typing import Optional
 import numpy as np
 from scipy.optimize import milp, LinearConstraint, Bounds
 
-from entities import Battery, ElectricVehicle, HeatPump, Entity, VariableRegistry, Constraints
-from forecast import ForecastTrajectory
+from .entities import Battery, ElectricVehicle, HeatPump, Entity, VariableRegistry, Constraints
+from .forecast import ForecastTrajectory
 
 
 @dataclass

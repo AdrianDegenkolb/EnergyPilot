@@ -8,13 +8,14 @@ At each timestep:
   4. Apply first timestep decisions
   5. Advance state
 """
+from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
 
-from forecast import ForecastParams, ForecastTrajectory
-from entities import Battery, ElectricVehicle, HeatPump
-from household import Household, OptimisationResult
+from optimization.forecast import ForecastParams, ForecastTrajectory
+from optimization.entities import Battery, ElectricVehicle, HeatPump
+from optimization.household import Household
 
 
 def make_forecast_params(
@@ -240,8 +241,10 @@ def plot_results(history: dict, dt: float) -> None:
     ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig("/mnt/user-data/outputs/mpc_v2_results.png", dpi=150, bbox_inches="tight")
-    print("\nPlot saved.")
+    save_path = Path("outputs/mpc_v2_results.png")
+    save_path.parent.mkdir(exist_ok=True)
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    print("\nPlot saved under " + str(save_path.absolute()))
 
 
 if __name__ == "__main__":
