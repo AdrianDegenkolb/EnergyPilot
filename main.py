@@ -79,7 +79,7 @@ def _stacked_bars(
 
 def _step_cost(s: MPCStep, dt: float) -> float:
     """
-    Compute realised cost for a single executed MPC timestep.
+    Compute realized cost for a single executed MPC timestep.
 
     Uses p_buy/p_sell from the first timestep of the optimal plan,
     not total_cost which covers the entire planning horizon.
@@ -225,7 +225,7 @@ def plot_results(history: MPCHistory, dt: float) -> None:
 
 def main() -> None:
     """Wire up components and run the MPC simulation."""
-    dt = 1.0  # 1 hour timestep
+    dt = 0.25
     T_total = int(24 / dt)
     T_horizon = int(12 / dt)
     seed = 0
@@ -237,9 +237,9 @@ def main() -> None:
         BaseLoad(load=np.zeros(T_horizon)),       # updated each step via update()
         PVGenerator(generation=np.zeros(T_horizon)),
         Battery(capacity=10.0, soc_init=4.0, charge_max=3.0, discharge_max=3.0, soc_min=1.0),
-        ElectricVehicle(capacity=60.0, soc_init=15.0, charge_max=11.0, discharge_max=11.0, target_soc=50.0),
+        ElectricVehicle(capacity=60.0, soc_init=15.0, charge_max=11.0, discharge_max=11.0, target_soc=50.0, target_timestep=T_total),
         HeatPump(
-            temp_init=18.5,
+            temp_init=21.5,
             temp_min=np.full(T_horizon, 20.0),
             temp_max=np.full(T_horizon, 23.0),
             temp_out=np.zeros(T_horizon),         # updated each step via update()
@@ -253,7 +253,7 @@ def main() -> None:
     runner = MPCRunner(
         environment=SyntheticEnvironment(
             T_total=T_total, rng=rng,
-            soc_bat_init=4.0, soc_ev_init=15.0, temp_in_init=18.5,
+            soc_bat_init=4.0, soc_ev_init=15.0, temp_in_init=21.5,
         ),
         forecaster=SyntheticForecaster(),
         entities=entities,
