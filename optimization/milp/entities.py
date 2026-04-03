@@ -7,7 +7,7 @@ Each entity contributes:
   - additional inequality constraints (e.g. deadlines)
   - terms to the objective function (currently none besides grid cost)
 
-Naming convention for variable indices within the flat optimization vector:
+Naming convention for variable indices within the flat optimisation vector:
   Each entity receives a slice of the variable vector via register().
 """
 
@@ -16,6 +16,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional
 import numpy as np
+
+from forecasting.Observation import Observation
+from forecasting.Forecast import ForecastTrajectory
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +168,16 @@ class Entity(ABC):
         return np.array([self.net_power(n, t)[0] @ x + self.net_power(n, t)[1]
                          for t in range(T)])
 
+    def update(self, obs: Observation, trajectory: ForecastTrajectory) -> None:
+        """
+        Update internal state from the latest observation and trajectory.
+
+        Args:
+            obs: current observation with real values for t=0.
+            trajectory: forecasted trajectory
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Battery
@@ -255,6 +268,10 @@ class Battery(Entity):
         coeffs[self._x[t]] = 1.0
         return coeffs, 0.0
 
+    def update(self, obs: Observation, trajectory: ForecastTrajectory) -> None:
+        """Update soc_init from the latest observation."""
+        self.soc_init = obs.soc_bat
+
 
 # ---------------------------------------------------------------------------
 # Electric Vehicle
@@ -273,6 +290,7 @@ class ElectricVehicle(Entity):
         capacity: float,
         soc_init: float,
         charge_max: float,
+        discharge_max: float = 0.0,
         soc_min: float = 0.0,
         target_soc: Optional[float] = None,
         target_timestep: Optional[int] = None,
@@ -283,6 +301,7 @@ class ElectricVehicle(Entity):
             capacity: Maximum SoC [kWh].
             soc_init: Initial SoC [kWh].
             charge_max: Maximum charging power [kW].
+            discharge_max: Maximum discharging power [kW]
             soc_min: Minimum allowed SoC [kWh].
             target_soc: Desired minimum SoC at target_timestep [kWh].
             target_timestep: Timestep by which target_soc must be reached.
@@ -291,6 +310,7 @@ class ElectricVehicle(Entity):
         self.capacity = capacity
         self.soc_init = soc_init
         self.charge_max = charge_max
+        self.discharge_max = discharge_max
         self.soc_min = soc_min
         self.target_soc = target_soc
         self.target_timestep = target_timestep
@@ -319,7 +339,7 @@ class ElectricVehicle(Entity):
 
         # Bounds: no discharging (x_ev >= 0), SoC within [soc_min, capacity]
         for t in range(T):
-            lb[self._x[t]] = 0.0
+            lb[self._x[t]] = -self.discharge_max
             ub[self._x[t]] = self.charge_max
         for t in range(T + 1):
             lb[self._soc[t]] = self.soc_min
@@ -350,6 +370,11 @@ class ElectricVehicle(Entity):
         coeffs = np.zeros(n)
         coeffs[self._x[t]] = 1.0
         return coeffs, 0.0
+
+    def update(self, obs: Observation, trajectory: ForecastTrajectory) -> None:
+        """Update soc_init and target_timestep from the latest observation and trajectory."""
+        self.soc_init = obs.soc_ev
+        self.target_timestep = trajectory.T - 1
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +496,11 @@ class HeatPump(Entity):
         coeffs[self._x[t]] = 1.0
         return coeffs, 0.0
 
+    def update(self, obs: Observation, trajectory: ForecastTrajectory) -> None:
+        """Set temp_init and temp_out from the latest observation and trajectory."""
+        self.temp_init = obs.temp_in
+        self.temp_out = trajectory.temp_out
+
 
 # ---------------------------------------------------------------------------
 # Base Load (uncontrollable)
@@ -512,6 +542,10 @@ class BaseLoad(Entity):
         """Return zero coeffs and load[t] as constant rhs (consuming = positive)."""
         return np.zeros(n), float(self.load[t])
 
+    def update(self, obs: Observation, trajectory: ForecastTrajectory) -> None:
+        """Set load from the latest trajectory."""
+        self.load = trajectory.load
+
 
 # ---------------------------------------------------------------------------
 # PV Generator (uncontrollable)
@@ -552,3 +586,7 @@ class PVGenerator(Entity):
     def net_power(self, n: int, t: int) -> tuple[np.ndarray, float]:
         """Return zero coeffs and -generation[t] as constant rhs (producing = negative)."""
         return np.zeros(n), -float(self.generation[t])
+
+    def update(self, obs: Observation, trajectory: ForecastTrajectory) -> None:
+        """Set generation from the latest trajectory."""
+        self.generation = trajectory.pv

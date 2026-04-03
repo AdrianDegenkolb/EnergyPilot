@@ -3,7 +3,7 @@ Forecast trajectories for the planning horizon.
 
 At t=0 real observed values are used. For t>0, values are sampled
 from distributions representing forecast uncertainty.
-Each quantity is modelled as a normal distribution with a mean and std
+Each quantity is modeled as a normal distribution with a mean and std
 trajectory over the horizon.
 """
 

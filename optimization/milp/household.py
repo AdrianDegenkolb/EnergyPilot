@@ -22,7 +22,7 @@ import numpy as np
 from scipy.optimize import milp, LinearConstraint, Bounds
 
 from .entities import Entity, VariableRegistry, Constraints
-from .forecast import ForecastTrajectory
+from forecasting.Forecast import ForecastTrajectory
 
 
 @dataclass

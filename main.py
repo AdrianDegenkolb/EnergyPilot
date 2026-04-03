@@ -1,267 +1,270 @@
 """
-MPC loop for household energy scheduling.
+Entry point for the household energy scheduling POC.
 
-At each timestep:
-  1. Populate t=0 with real observed values (std=0)
-  2. Sample a forecast trajectory for t=1..T
-  3. Solve MILP over full horizon
-  4. Apply first timestep decisions
-  5. Advance state
+Wires together environment, forecaster, entity list, and MPC runner,
+then plots the results.
+
+The household configuration is defined by the entity list passed to
+MPCRunner — omit an entity to exclude it from scheduling.
 """
-from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import gridspec
 
-from optimization.entities import Battery, ElectricVehicle, HeatPump, BaseLoad, PVGenerator
-from optimization.forecast import ForecastParams, ForecastTrajectory
-from optimization.household import Household, OptimisationResult
+from optimization import Battery, ElectricVehicle, HeatPump, BaseLoad, PVGenerator, MPCHistory, MPCRunner, MPCStep, SyntheticEnvironment
+from forecasting import SyntheticForecaster
 
-
-def make_forecast_params(
-    T: int,
-    dt: float,
-    current_obs: dict,
-    rng: np.random.Generator,
-) -> ForecastParams:
-    """
-    Build forecast parameters for the planning horizon.
-
-    t=0 uses real observations (std=0).
-    t>0 uses simple synthetic forecast distributions.
-
-    Args:
-        T: Planning horizon in timesteps.
-        dt: Timestep duration [h].
-        current_obs: Dictionary of current real observations.
-        rng: Random number generator.
-
-    Returns:
-        ForecastParams with mean/std arrays of shape (T,).
-    """
-    t = np.arange(T)
-
-    # Buy price: higher morning/evening, lower midday, slight noise for t>0
-    price_buy_mean = 0.28 + 0.08 * np.cos(2 * np.pi * t / T)
-    price_buy_mean[0] = current_obs["price_buy"]
-    price_buy_std = np.concatenate([[0.0], np.full(T - 1, 0.02)])
-
-    # Sell price: fixed feed-in tariff with small uncertainty
-    price_sell_mean = np.full(T, 0.08)
-    price_sell_mean[0] = current_obs["price_sell"]
-    price_sell_std = np.concatenate([[0.0], np.full(T - 1, 0.005)])
-
-    # PV: bell curve peaking at midday
-    pv_mean = 3.5 * np.exp(-0.5 * ((t - T * 0.5) / (T * 0.18)) ** 2)
-    pv_mean[0] = current_obs["pv"]
-    pv_std = np.concatenate([[0.0], 0.2 * pv_mean[1:] + 0.05])
-
-    # Base load: slightly higher in morning and evening
-    load_mean = 0.6 + 0.25 * np.abs(np.sin(np.pi * t / T))
-    load_mean[0] = current_obs["load"]
-    load_std = np.concatenate([[0.0], np.full(T - 1, 0.1)])
-
-    # Outdoor temperature: warming through the day
-    temp_out_mean = 4.0 + 4.0 * np.sin(np.pi * t / T)
-    temp_out_mean[0] = current_obs["temp_out"]
-    temp_out_std = np.concatenate([[0.0], np.full(T - 1, 1.0)])
-
-    return ForecastParams(
-        T=T, dt=dt,
-        price_buy_mean=price_buy_mean,
-        price_buy_std=price_buy_std,
-        price_sell_mean=price_sell_mean,
-        price_sell_std=price_sell_std,
-        pv_mean=pv_mean,
-        pv_std=pv_std,
-        load_mean=load_mean,
-        load_std=load_std,
-        temp_out_mean=temp_out_mean,
-        temp_out_std=temp_out_std,
-    )
+# Consistent color palette
+C_BATTERY = "#1976D2"
+C_EV = "#388E3C"
+C_HP = "#F57C00"
+C_PV = "#FBC02D"
+C_LOAD = "#D32F2F"
+C_BUY = "#C2185B"
+C_SELL = "#7B1FA2"
+C_PRICE = "#455A64"
+C_TEMP_IN = "#E53935"
+C_TEMP_OUT = "#42A5F5"
+C_MPC = "#1565C0"
+C_NAIVE = "#EF6C00"
 
 
-def run_mpc(
-    T_total: int = 12,
-    T_horizon: int = 12,
-    dt: float = 1,
-    seed: int = 0,
+def _style_ax(ax: plt.Axes, ylabel: str, legend_loc: str = "best") -> None:
+    """Apply consistent styling to an axes."""
+    ax.set_ylabel(ylabel, fontsize=9)
+    ax.tick_params(labelsize=8)
+    ax.grid(True, alpha=0.2, linestyle="--")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(fontsize=8, loc=legend_loc, framealpha=0.7)
+
+
+def _stacked_bars(
+        ax: plt.Axes,
+        steps: np.ndarray,
+        components: list[tuple[str, np.ndarray, str]],
+        width: float,
 ) -> None:
     """
-    Run MPC loop over T_total timesteps.
+    Plot stacked bars with positive and negative values stacking separately.
+
+    Positive values stack upward, negative values stack downward —
+    bars never overlap regardless of sign.
 
     Args:
-        T_total: Total number of MPC steps to simulate.
-        T_horizon: Planning horizon length in timesteps.
-        dt: Timestep duration [h].
-        seed: Random seed for reproducibility.
+        ax: Target axes.
+        steps: Bar x-positions.
+        components: List of (label, values_array, color).
+        width: Bar width.
     """
+    pos_bottom = np.zeros(len(steps))
+    neg_bottom = np.zeros(len(steps))
+
+    for label, values, color in components:
+        values = np.asarray(values, dtype=float)
+        pos = np.where(values > 0, values, 0.0)
+        neg = np.where(values < 0, values, 0.0)
+        if pos.any():
+            ax.bar(steps, pos, width=width, bottom=pos_bottom,
+                   label=label, color=color, alpha=0.85)
+            pos_bottom += pos
+        if neg.any():
+            ax.bar(steps, neg, width=width, bottom=neg_bottom,
+                   label=f"{label} (↓)" if pos.any() else label,
+                   color=color, alpha=0.45)
+            neg_bottom += neg
+
+
+def _step_cost(s: MPCStep, dt: float) -> float:
+    """
+    Compute realised cost for a single executed MPC timestep.
+
+    Uses p_buy/p_sell from the first timestep of the optimal plan,
+    not total_cost which covers the entire planning horizon.
+    """
+    return (s.p_buy * s.observation.price_buy
+            - s.p_sell * s.observation.price_sell) * dt
+
+
+def _naive_step_cost(s: MPCStep, dt: float) -> float:
+    """
+    Compute naive baseline cost for a fair comparison with MPC.
+
+    The naive system fulfils the same HP and EV demands as MPC but has
+    no battery — it buys or sells the net demand immediately at the
+    current spot price without any temporal shifting.
+
+    net = load + x_hp + x_ev - pv
+    cost = max(0, net) * price_buy - max(0, -net) * price_sell
+    """
+    x_hp = s.decisions.get("x_hp", 0.0)
+    x_ev = s.decisions.get("x_ev", 0.0)
+    net = s.observation.load + x_hp + x_ev - s.observation.pv
+    buy = max(0.0, net) * s.observation.price_buy * dt
+    sell = max(0.0, -net) * s.observation.price_sell * dt
+    return buy - sell
+
+
+def plot_results(history: MPCHistory, dt: float) -> None:
+    """
+    Plot a dashboard of MPC simulation results.
+
+    Layout (4 rows):
+        [1] Energy prices             [2] Load & PV generation
+        [3] Grid import / export      [4] Scheduling decisions
+        [5] State of charge           [6] Heat pump & temperature
+        [7] Cumulative cost (full width)
+    """
+    steps = np.array([s.step for s in history.steps]) * dt
+    w = 0.55 * dt
+
+    # --- Extract data ---
+    price_buy = np.array([s.observation.price_buy for s in history.steps])
+    price_sell = np.array([s.observation.price_sell for s in history.steps])
+    p_buy = np.array([s.p_buy for s in history.steps])
+    p_sell = np.array([s.p_sell for s in history.steps])
+    load = np.array([s.observation.load for s in history.steps])
+    pv = np.array([s.observation.pv for s in history.steps])
+    temp_in = np.array([s.observation.temp_in for s in history.steps])
+    temp_out = np.array([s.observation.temp_out for s in history.steps])
+    soc_bat = np.array([s.observation.soc_bat for s in history.steps])
+    soc_ev = np.array([s.observation.soc_ev for s in history.steps])
+    x_bat = np.array([s.decisions.get("x_bat", 0.0) for s in history.steps])
+    x_ev = np.array([s.decisions.get("x_ev", 0.0) for s in history.steps])
+    x_hp = np.array([s.decisions.get("x_hp", 0.0) for s in history.steps])
+
+    mpc_costs = np.array([_step_cost(s, dt) for s in history.steps])
+    naive_costs = np.array([_naive_step_cost(s, dt) for s in history.steps])
+
+    # --- Layout ---
+    fig = plt.figure(figsize=(14, 16))
+    fig.suptitle("Household Energy Scheduling — MPC", fontsize=13, fontweight="bold", y=0.99)
+    gs = gridspec.GridSpec(4, 2, figure=fig, hspace=0.5, wspace=0.35)
+
+    ax1 = fig.add_subplot(gs[0, 0])  # Energy prices
+    ax2 = fig.add_subplot(gs[0, 1])  # Load & PV generation
+    ax3 = fig.add_subplot(gs[1, 0])  # Grid import / export
+    ax4 = fig.add_subplot(gs[1, 1])  # Scheduling decisions
+    ax5 = fig.add_subplot(gs[2, 0])  # State of charge
+    ax6 = fig.add_subplot(gs[2, 1])  # Heat pump & temperature
+    ax7 = fig.add_subplot(gs[3, :])  # Cumulative cost (full width)
+
+    # --- [1] Energy prices ---
+    ax1.plot(steps, price_buy, "-", color=C_BUY, lw=1.5, label="Buy price [€/kWh]")
+    ax1.plot(steps, price_sell, "--", color=C_SELL, lw=1.5, label="Sell price [€/kWh]")
+    ax1.set_title("Energy Prices", fontsize=9, fontweight="bold")
+    _style_ax(ax1, "Price [€/kWh]")
+
+    # --- [2] Load & PV generation ---
+    ax2.plot(steps, load, "-", color=C_LOAD, lw=1.5, label="Load [kW]")
+    ax2.plot(steps, pv, "--", color=C_PV, lw=1.5, label="PV gen [kW]")
+    ax2.set_title("Load & PV Generation", fontsize=9, fontweight="bold")
+    _style_ax(ax2, "Power [kW]")
+
+    # --- [3] Grid import / export ---
+    ax3.bar(steps, p_buy, width=w, color=C_BUY, alpha=0.85, label="Import [kW]")
+    ax3.bar(steps, -p_sell, width=w, color=C_SELL, alpha=0.85, label="Export [kW]")
+    ax3.axhline(0, color="black", lw=0.4)
+    ax3.set_title("Grid Import / Export", fontsize=9, fontweight="bold")
+    _style_ax(ax3, "Power [kW]")
+
+    # --- [4] Scheduling decisions ---
+    _stacked_bars(ax4, steps, [
+        ("Battery", x_bat, C_BATTERY),
+        ("EV", x_ev, C_EV),
+        ("Heat pump", x_hp, C_HP),
+    ], width=w)
+    ax4.axhline(0, color="black", lw=0.4)
+    ax4.set_title("Scheduling Decisions", fontsize=9, fontweight="bold")
+    _style_ax(ax4, "Scheduled power [kW]")
+
+    # --- [5] State of charge ---
+    ax5.plot(steps, soc_bat, "o-", color=C_BATTERY, lw=1.5, ms=4, label="Battery [kWh]")
+    ax5.plot(steps, soc_ev, "s-", color=C_EV, lw=1.5, ms=4, label="EV [kWh]")
+    ax5.set_title("State of Charge", fontsize=9, fontweight="bold")
+    _style_ax(ax5, "SoC [kWh]")
+
+    # --- [6] Heat pump & temperature (no HP bars, single combined legend) ---
+    ax6.plot(steps, temp_in, "-", color=C_TEMP_IN, lw=1.5, label="Indoor [°C]")
+    ax6.plot(steps, temp_out, "--", color=C_TEMP_OUT, lw=1.5, label="Outdoor [°C]")
+    ax6.axhline(20.0, color=C_TEMP_IN, lw=0.8, ls=":", alpha=0.6, label="Min comfort [°C]")
+    ax6.axhline(23.0, color=C_TEMP_IN, lw=0.8, ls=":", alpha=0.4, label="Max comfort [°C]")
+    ax6.set_title("Heat Pump & Temperature", fontsize=9, fontweight="bold")
+    _style_ax(ax6, "Temperature [°C]")
+
+    # --- [7] Cumulative cost (full width) ---
+    cum_mpc = np.cumsum(mpc_costs)
+    cum_naive = np.cumsum(naive_costs)
+    final_mpc = cum_mpc[-1]
+    final_naive = cum_naive[-1]
+    savings = final_naive - final_mpc
+
+    ax7.plot(steps, cum_mpc, "o-", color=C_MPC, lw=2, ms=4,
+             label=f"MPC  —  final: {final_mpc:.2f} €")
+    ax7.plot(steps, cum_naive, "s--", color=C_NAIVE, lw=2, ms=4,
+             label=f"Naive  —  final: {final_naive:.2f} €")
+    ax7.fill_between(
+        steps, cum_mpc, cum_naive,
+        where=cum_naive >= cum_mpc,
+        alpha=0.12, color="#4CAF50", label=f"Savings: {savings:.2f} €",
+    )
+    ax7.set_title("Cumulative Cost: MPC vs Naive", fontsize=9, fontweight="bold")
+    _style_ax(ax7, "Cumulative cost [€]")
+
+    for ax in [ax1, ax2, ax3, ax4, ax5, ax6, ax7]:
+        ax.set_xlabel("Time [h]", fontsize=8)
+
+    plt.savefig("outputs/mpc_v5_results.png", dpi=150, bbox_inches="tight")
+    print(f"\nPlot saved.")
+    print(f"  MPC total cost:   {final_mpc:.4f} €")
+    print(f"  Naive total cost: {final_naive:.4f} €")
+    print(f"  Savings (MPC):    {savings:.4f} €")
+
+
+def main() -> None:
+    """Wire up components and run the MPC simulation."""
+    dt = 1.0  # 1 hour timestep
+    T_total = int(24 / dt)
+    T_horizon = int(12 / dt)
+    seed = 0
+
     rng = np.random.default_rng(seed)
 
-    # Initial state
-    state = {
-        "soc_bat": 4.0,
-        "soc_ev": 15.0,
-        "temp_in": 21.0,
-    }
-
-    # Simulated real observations (would come from sensors in production)
-    def get_observations(step: int) -> dict:
-        """Return synthetic real observations for the current timestep."""
-        return {
-            "price_buy": 0.28 + 0.08 * np.cos(2 * np.pi * step / T_total) + rng.normal(0, 0.01),
-            "price_sell": 0.08,
-            "pv": max(0.0, 3.5 * np.exp(-0.5 * ((step - T_total * 0.5) / (T_total * 0.18)) ** 2)
-                      + rng.normal(0, 0.1)),
-            "load": max(0.0, 0.6 + 0.25 * abs(np.sin(np.pi * step / T_total)) + rng.normal(0, 0.05)),
-            "temp_out": 4.0 + 4.0 * np.sin(np.pi * step / T_total) + rng.normal(0, 0.3),
-        }
-
-    history = {
-        "soc_bat": [state["soc_bat"]],
-        "soc_ev": [state["soc_ev"]],
-        "temp_in": [state["temp_in"]],
-        "p_buy": [], "p_sell": [],
-        "x_bat": [], "x_ev": [], "x_hp": [],
-        "price_buy": [], "pv": [], "load": [],
-    }
-
-    print(f"{'t':>3}  {'Cost':>7}  {'SoC bat':>8}  {'SoC EV':>7}  {'Temp':>6}  {'p_buy':>6}  {'p_sell':>6}")
-    print("─" * 65)
-
-    for step in range(int(T_total / dt)):
-        T_h = min(int(T_horizon / dt), int(T_total / dt - step))
-        obs = get_observations(step)
-
-        params = make_forecast_params(T_h, dt, obs, rng)
-        trajectory = ForecastTrajectory.sample(params, rng)
-
-        # Rebuild entities with current state
-        battery = Battery(
-            capacity=10.0, soc_init=state["soc_bat"],
-            charge_max=3.0, discharge_max=3.0, soc_min=1.0,
-        )
-        ev = ElectricVehicle(
-            capacity=60.0, soc_init=state["soc_ev"],
-            charge_max=11.0, soc_min=0.0,
-            target_soc=50.0, target_timestep=T_h - 1,
-        )
-        heat_pump = HeatPump(
-            temp_init=state["temp_in"],
-            temp_min=np.full(T_h, 20.0),
-            temp_max=np.full(T_h, 23.0),
-            temp_out=trajectory.temp_out,
+    # Define household configuration — add or remove entities freely
+    entities = [
+        BaseLoad(load=np.zeros(T_horizon)),       # updated each step via update()
+        PVGenerator(generation=np.zeros(T_horizon)),
+        Battery(capacity=10.0, soc_init=4.0, charge_max=3.0, discharge_max=3.0, soc_min=1.0),
+        ElectricVehicle(capacity=60.0, soc_init=15.0, charge_max=11.0, discharge_max=11.0, target_soc=50.0),
+        HeatPump(
+            temp_init=18.5,
+            temp_min=np.full(T_horizon, 20.0),
+            temp_max=np.full(T_horizon, 23.0),
+            temp_out=np.zeros(T_horizon),         # updated each step via update()
             max_power=3.0,
             C_therm=5.0,
             lambda_=0.25,
             cop_eta=0.4,
-        )
-        base_load = BaseLoad(trajectory.load)
-        pv = PVGenerator(trajectory.pv)
+        ),
+    ]
 
-        household = Household(entities=[battery, ev, heat_pump, base_load, pv])
-        result: OptimisationResult = household.solve(trajectory)
+    runner = MPCRunner(
+        environment=SyntheticEnvironment(
+            T_total=T_total, rng=rng,
+            soc_bat_init=4.0, soc_ev_init=15.0, temp_in_init=18.5,
+        ),
+        forecaster=SyntheticForecaster(),
+        entities=entities,
+        T_horizon=T_horizon,
+        dt=dt,
+        rng=rng,
+    )
 
-        if not result.success:
-            print(f"{step:>3}  {'—':>7}  {state['soc_bat']:>8.2f}  {state['soc_ev']:>7.2f}  "
-                  f"{state['temp_in']:>6.1f}  FAILED: {result.message}")
-            continue
-
-        # Advance state using first timestep
-        state["soc_bat"] = float(result.states['soc_bat'][1])
-        state["soc_ev"] = float(result.states['soc_ev'][1])
-        state["temp_in"] = float(result.states['temp_in'][1])
-
-        history["soc_bat"].append(state["soc_bat"])
-        history["soc_ev"].append(state["soc_ev"])
-        history["temp_in"].append(state["temp_in"])
-        history["p_buy"].append(float(result.p_buy[0]))
-        history["p_sell"].append(float(result.p_sell[0]))
-        history["x_bat"].append(float(result.decisions['x_bat'][0]))
-        history["x_ev"].append(float(result.decisions['x_ev'][0]))
-        history["x_hp"].append(float(result.decisions['x_hp'][0]))
-        history["price_buy"].append(obs["price_buy"])
-        history["pv"].append(obs["pv"])
-        history["load"].append(obs["load"])
-
-        print(f"{step:>3}  {result.total_cost:>7.4f}  {state['soc_bat']:>8.2f}  "
-              f"{state['soc_ev']:>7.2f}  {state['temp_in']:>6.1f}  "
-              f"{result.p_buy[0]:>6.2f}  {result.p_sell[0]:>6.2f}")
-
+    history = runner.run(T_total)
     plot_results(history, dt)
 
 
-def plot_results(history: dict, dt: float) -> None:
-    """Plot MPC simulation results."""
-    steps = np.arange(len(history["p_buy"])) * dt
-
-    fig, axes = plt.subplots(4, 1, figsize=(11, 10), sharex=True)
-    fig.suptitle("Household Energy Scheduling — MPC", fontsize=13, fontweight="bold")
-
-    # SoC
-    ax = axes[0]
-    ax.plot(steps, history["soc_bat"][1:], "o-", label="Battery SoC [kWh]", color="#2196F3")
-    ax.plot(steps, history["soc_ev"][1:], "s-", label="EV SoC [kWh]", color="#4CAF50")
-    ax.set_ylabel("SoC [kWh]")
-    ax.legend(loc="upper left")
-    ax.grid(True, alpha=0.3)
-
-    # Temperature
-    ax = axes[1]
-    ax.plot(steps, history["temp_in"][1:], "o-", color="#F44336", label="Indoor temp [°C]")
-    ax.axhline(20.0, linestyle="--", color="gray", alpha=0.6, label="Min 20°C")
-    ax.axhline(23.0, linestyle="--", color="gray", alpha=0.4, label="Max 23°C")
-    ax.set_ylabel("Temperature [°C]")
-    ax.legend(loc="upper left")
-    ax.grid(True, alpha=0.3)
-
-    # Power decisions
-    pos_base = np.zeros_like(history["x_hp"])
-    neg_base = np.zeros_like(history["x_hp"])
-
-    def stack_bar(ax, x, y, pos_base, neg_base, **kwargs):
-        bottom = np.where(y >= 0, pos_base, neg_base)
-        ax.bar(x, y, bottom=bottom, **kwargs)
-
-        # update bases
-        pos_base += np.where(y >= 0, y, 0)
-        neg_base += np.where(y < 0, y, 0)
-
-    # plotting
-    ax = axes[2]
-
-    stack_bar(ax, steps, history["x_hp"], pos_base, neg_base,
-              width=0.4 * dt, label="Heat pump [kW]", color="#FF9800", alpha=0.8)
-    stack_bar(ax, steps, history["x_bat"], pos_base, neg_base,
-              width=0.4 * dt, label="Battery [kW]", color="#2196F3", alpha=0.8)
-    stack_bar(ax, steps, history["x_ev"], pos_base, neg_base,
-              width=0.4 * dt, label="EV [kW]", color="#4CAF50", alpha=0.8)
-
-    ax.set_ylabel("Power [kW]")
-    ax.legend(loc="upper left")
-    ax.grid(True, alpha=0.3)
-
-    # Grid + price
-    ax = axes[3]
-    ax2 = ax.twinx()
-    ax.bar(steps - 0.2*dt, history["p_buy"], width=0.35*dt,
-           label="Grid buy [kW]", color="#E91E63", alpha=0.8)
-    ax.bar(steps + 0.2*dt, history["p_sell"], width=0.35*dt,
-           label="Grid sell [kW]", color="#9C27B0", alpha=0.8)
-    ax2.plot(steps, history["price_buy"], "k--", alpha=0.5, label="Buy price [€/kWh]")
-    ax.set_ylabel("Power [kW]")
-    ax2.set_ylabel("Price [€/kWh]")
-    ax.set_xlabel("Time [h]")
-    ax.legend(loc="upper left")
-    ax2.legend(loc="upper right")
-    ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    save_path = Path("outputs/mpc_test_results.png")
-    save_path.parent.mkdir(exist_ok=True)
-    plt.savefig(save_path, dpi=150, bbox_inches="tight")
-    print("\nPlot saved under " + str(save_path.absolute()))
-
-
 if __name__ == "__main__":
-    run_mpc(dt=0.5, T_total=24, T_horizon=12, seed=42)
+    main()
