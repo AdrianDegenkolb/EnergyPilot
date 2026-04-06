@@ -27,8 +27,8 @@ SyntheticSensor and every entity actuator is a SyntheticActuator, preventing
 accidental mixing of real and synthetic components.
 """
 
-from .state import SyntheticState
+from .state import SyntheticState, SyntheticExternalState
 from .sensor import SyntheticSensor
 from .actuator import SyntheticActuator
 
-__all__ = ["SyntheticState", "SyntheticSensor", "SyntheticActuator"]
+__all__ = ["SyntheticState", "SyntheticExternalState", "SyntheticSensor", "SyntheticActuator"]

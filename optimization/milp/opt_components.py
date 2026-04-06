@@ -23,9 +23,12 @@ Physical interpretation of commands:
 """
 
 from __future__ import annotations
+
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
+
 import numpy as np
 
 if TYPE_CHECKING:
@@ -56,6 +59,9 @@ class VariableRegistry:
 
     def __getitem__(self, name: str) -> range:
         return self._blocks[name]
+
+    def get_registered_names(self) -> list[str]:
+        return list(self._blocks.keys())
 
 
 # ---------------------------------------------------------------------------
@@ -97,10 +103,12 @@ class OptimizationComponent(ABC):
       - accepts its current measured state before each solve
       - extracts the optimal power command after each solve
     """
+    def __init__(self):
+        self.id = uuid.uuid4()
 
     @abstractmethod
     def register(self, reg: VariableRegistry, T: int) -> None:
-        """Register decision and state variables."""
+        """Register decision and state variables. Use self.id to create unique variable names if needed."""
         ...
 
     @abstractmethod
@@ -140,7 +148,7 @@ class OptimizationComponent(ABC):
         ...
 
     @abstractmethod
-    def extract_command(self, result: HouseholdResult) -> float:
+    def extract_optimal_power_setpoint(self, result: HouseholdResult) -> float:
         """
         Extract the optimal first-step power command from the solve result.
 
@@ -152,6 +160,19 @@ class OptimizationComponent(ABC):
         """
         ...
 
+    def extract_expected_next_step_state(self, result: HouseholdResult) -> float:
+        """
+        Extract the expected state (temperature, soc) of this component in the next timestep assuming the
+        optimal first-step power setpoint is used
+        .
+        Called by PhysicalEntity.act() after each solve. The returned value
+        is passed directly to the Actuator as the expected next state.
+
+        Args:
+            result: Full MILP result from HouseholdOptimizationProblems.solve().
+
+        """
+        ...
 
 # ---------------------------------------------------------------------------
 # Battery
@@ -175,32 +196,37 @@ class BatteryModel(OptimizationComponent):
     def __init__(
         self,
         capacity: float,
-        soc_init: float,
         charge_max: float,
         discharge_max: float,
         soc_min: float = 0.0,
         efficiency: float = 1.0,
     ) -> None:
+        super().__init__()
         self.capacity = capacity
-        self.soc_init = soc_init
+        self.soc_init: Optional[float] = None
         self.charge_max = charge_max
         self.discharge_max = discharge_max
         self.soc_min = soc_min
         self.efficiency = efficiency
 
-        self._x: Optional[range] = None
-        self._soc: Optional[range] = None
+        self._power_setpoint: Optional[range] = None        # set in register()
+        self._soc: Optional[range] = None                   # set in register()
+        self._power_setpoint_variable_name = f"battery_power_setpoint_{self.id}"
+        self._soc_variable_name = f"battery_soc_{self.id}"
 
     def register(self, reg: VariableRegistry, T: int) -> None:
-        self._x = reg.register("battery_x", T)
-        self._soc = reg.register("battery_soc", T + 1)
+        self._power_setpoint = reg.register(self._power_setpoint_variable_name, T)
+        self._soc = reg.register(self._soc_variable_name, T + 1)
 
     def contribute(self, reg, constraints, objective, lb, ub, T, dt) -> None:
+        if self.soc_init is None:
+            raise ValueError("BatteryModel.contribute() called before soc_init was set.")
+
         n = objective.size
 
         for t in range(T):
-            lb[self._x[t]] = -self.discharge_max
-            ub[self._x[t]] = self.charge_max
+            lb[self._power_setpoint[t]] = -self.discharge_max
+            ub[self._power_setpoint[t]] = self.charge_max
         for t in range(T + 1):
             lb[self._soc[t]] = self.soc_min
             ub[self._soc[t]] = self.capacity
@@ -213,20 +239,22 @@ class BatteryModel(OptimizationComponent):
             row = np.zeros(n)
             row[self._soc[t + 1]] = 1.0
             row[self._soc[t]] = -1.0
-            row[self._x[t]] = -dt * self.efficiency
+            row[self._power_setpoint[t]] = -dt * self.efficiency
             constraints.add_eq(row, 0.0)
 
     def net_power(self, n: int, t: int) -> tuple[np.ndarray, float]:
         coeffs = np.zeros(n)
-        coeffs[self._x[t]] = 1.0
+        coeffs[self._power_setpoint[t]] = 1.0
         return coeffs, 0.0
 
     def set_initial_state(self, value: float) -> None:
         self.soc_init = value
 
-    def extract_command(self, result: HouseholdResult) -> float:
-        return float(result.decisions["x_bat"][0])
+    def extract_optimal_power_setpoint(self, result: HouseholdResult) -> float:
+        return float(result.variables[self._power_setpoint_variable_name][0])
 
+    def extract_expected_next_step_state(self, result: HouseholdResult) -> float:
+        return float(result.variables[self._soc_variable_name][1])
 
 # ---------------------------------------------------------------------------
 # Electric Vehicle
@@ -248,7 +276,6 @@ class EVModel(OptimizationComponent):
     def __init__(
         self,
         capacity: float,
-        soc_init: float,
         charge_max: float,
         discharge_max: float = 0.0,
         soc_min: float = 0.0,
@@ -256,8 +283,9 @@ class EVModel(OptimizationComponent):
         target_timestep: Optional[int] = None,
         efficiency: float = 1.0,
     ) -> None:
+        super().__init__()
         self.capacity = capacity
-        self.soc_init = soc_init
+        self.soc_init: Optional[float] = None
         self.charge_max = charge_max
         self.discharge_max = discharge_max
         self.soc_min = soc_min
@@ -265,19 +293,24 @@ class EVModel(OptimizationComponent):
         self.target_timestep = target_timestep
         self.efficiency = efficiency
 
-        self._x: Optional[range] = None
-        self._soc: Optional[range] = None
+        self._power_setpoint: Optional[range] = None            # set in register()
+        self._soc: Optional[range] = None                       # set in register()
+        self._power_setpoint_variable_name = f"ev_power_setpoint_{self.id}"
+        self._soc_variable_name = f"ev_soc_{self.id}"
 
     def register(self, reg: VariableRegistry, T: int) -> None:
-        self._x = reg.register("ev_x", T)
-        self._soc = reg.register("ev_soc", T + 1)
+        self._power_setpoint = reg.register(self._power_setpoint_variable_name, T)
+        self._soc = reg.register(self._soc_variable_name, T + 1)
 
     def contribute(self, reg, constraints, objective, lb, ub, T, dt) -> None:
+        if self.soc_init is None:
+            raise ValueError("EVModel.contribute() called before soc_init was set.")
+
         n = objective.size
 
         for t in range(T):
-            lb[self._x[t]] = -self.discharge_max
-            ub[self._x[t]] = self.charge_max
+            lb[self._power_setpoint[t]] = -self.discharge_max
+            ub[self._power_setpoint[t]] = self.charge_max
         for t in range(T + 1):
             lb[self._soc[t]] = self.soc_min
             ub[self._soc[t]] = self.capacity
@@ -290,7 +323,7 @@ class EVModel(OptimizationComponent):
             row = np.zeros(n)
             row[self._soc[t + 1]] = 1.0
             row[self._soc[t]] = -1.0
-            row[self._x[t]] = -dt * self.efficiency
+            row[self._power_setpoint[t]] = -dt * self.efficiency
             constraints.add_eq(row, 0.0)
 
         if self.target_soc is not None and self.target_timestep is not None:
@@ -301,14 +334,17 @@ class EVModel(OptimizationComponent):
 
     def net_power(self, n: int, t: int) -> tuple[np.ndarray, float]:
         coeffs = np.zeros(n)
-        coeffs[self._x[t]] = 1.0
+        coeffs[self._power_setpoint[t]] = 1.0
         return coeffs, 0.0
 
     def set_initial_state(self, value: float) -> None:
         self.soc_init = value
 
-    def extract_command(self, result: HouseholdResult) -> float:
-        return float(result.decisions["x_ev"][0])
+    def extract_optimal_power_setpoint(self, result: HouseholdResult) -> float:
+        return float(result.variables[self._power_setpoint_variable_name][0])
+
+    def extract_expected_next_step_state(self, result: HouseholdResult) -> float:
+        return float(result.variables[self._soc_variable_name][1])
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +372,6 @@ class HeatPumpModel(OptimizationComponent):
 
     def __init__(
         self,
-        temp_init: float,
         temp_min: np.ndarray,
         temp_max: np.ndarray,
         temp_out_series: TimeSeries,
@@ -345,7 +380,8 @@ class HeatPumpModel(OptimizationComponent):
         lambda_: float,
         cop_eta: float = 0.4,
     ) -> None:
-        self.temp_init = temp_init
+        super().__init__()
+        self.temp_init: Optional[float] = None
         self.temp_min = temp_min
         self.temp_max = temp_max
         self._temp_out_series = temp_out_series
@@ -354,8 +390,10 @@ class HeatPumpModel(OptimizationComponent):
         self.lambda_ = lambda_
         self.cop_eta = cop_eta
 
-        self._x: Optional[range] = None
-        self._temp: Optional[range] = None
+        self._power_setpoint: Optional[range] = None            # set in register()
+        self._temp: Optional[range] = None                      # set in register()
+        self._power_setpoint_variable_name = f"hp_power_setpoint_{self.id}"
+        self._temp_variable_name = f"hp_inner_temp_{self.id}"
 
     def _compute_cop(self, temp_out: np.ndarray, T: int) -> np.ndarray:
         T_in_K = self.temp_min[:T] + 273.15
@@ -365,17 +403,20 @@ class HeatPumpModel(OptimizationComponent):
         return np.clip(cop, 1.0, 6.0)
 
     def register(self, reg: VariableRegistry, T: int) -> None:
-        self._x = reg.register("hp_x", T)
-        self._temp = reg.register("hp_temp", T + 1)
+        self._power_setpoint = reg.register(self._power_setpoint_variable_name, T)
+        self._temp = reg.register(self._temp_variable_name, T + 1)
 
     def contribute(self, reg, constraints, objective, lb, ub, T, dt) -> None:
+        if self.temp_init is None:
+            raise ValueError("HeatPumpModel.contribute() called before temp_init was set.")
+
         temp_out = self._temp_out_series.forecast(T, dt)
         cop = self._compute_cop(temp_out, T)
         n = objective.size
 
         for t in range(T):
-            lb[self._x[t]] = 0.0
-            ub[self._x[t]] = self.max_power
+            lb[self._power_setpoint[t]] = 0.0
+            ub[self._power_setpoint[t]] = self.max_power
 
         row = np.zeros(n)
         row[self._temp[0]] = 1.0
@@ -385,7 +426,7 @@ class HeatPumpModel(OptimizationComponent):
             row = np.zeros(n)
             row[self._temp[t + 1]] = 1.0
             row[self._temp[t]] = -(1.0 - self.lambda_ * dt / self.C_therm)
-            row[self._x[t]] = -cop[t] * dt / self.C_therm
+            row[self._power_setpoint[t]] = -cop[t] * dt / self.C_therm
             rhs = self.lambda_ * dt * temp_out[t] / self.C_therm
             constraints.add_eq(row, rhs)
 
@@ -395,11 +436,15 @@ class HeatPumpModel(OptimizationComponent):
 
     def net_power(self, n: int, t: int) -> tuple[np.ndarray, float]:
         coeffs = np.zeros(n)
-        coeffs[self._x[t]] = 1.0
+        coeffs[self._power_setpoint[t]] = 1.0
         return coeffs, 0.0
 
     def set_initial_state(self, value: float) -> None:
         self.temp_init = value
 
-    def extract_command(self, result: HouseholdResult) -> float:
-        return float(result.decisions["x_hp"][0])
+    def extract_optimal_power_setpoint(self, result: HouseholdResult) -> float:
+        return float(result.variables[self._power_setpoint_variable_name][0])
+
+    def extract_expected_next_step_state(self, result: HouseholdResult) -> float:
+        return float(result.variables[self._temp_variable_name][1])
+

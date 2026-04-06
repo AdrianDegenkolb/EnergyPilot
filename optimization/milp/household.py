@@ -9,12 +9,14 @@ variables and need no dedicated component.
 """
 
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Optional
+
 import numpy as np
 from scipy.optimize import milp, LinearConstraint, Bounds
 
-from .opt_components import OptimizationComponent, VariableRegistry, Constraints
 from forecasting.time_series import TimeSeries
+from .opt_components import OptimizationComponent, VariableRegistry, Constraints
 
 
 # ---------------------------------------------------------------------------
@@ -29,16 +31,15 @@ class HouseholdResult:
     total_cost: float
     message: str
 
-    p_buy: Optional[np.ndarray] = None       # grid purchase [kW] per timestep
-    p_sell: Optional[np.ndarray] = None      # grid feed-in [kW] per timestep
+    p_buy: Optional[np.ndarray] = None              # grid purchase [kW] per timestep
+    p_sell: Optional[np.ndarray] = None             # grid feed-in [kW] per timestep
 
-    load: Optional[np.ndarray] = None        # base load forecast [kW]
-    gen: Optional[np.ndarray] = None         # generation forecast [kW]
-    price_buy: Optional[np.ndarray] = None   # buy price forecast [€/kWh]
-    price_sell: Optional[np.ndarray] = None  # sell price forecast [€/kWh]
+    load: Optional[np.ndarray] = None               # base load forecast [kW]
+    gen: Optional[np.ndarray] = None                # generation forecast [kW]
+    price_buy: Optional[np.ndarray] = None          # buy price forecast [€/kWh]
+    price_sell: Optional[np.ndarray] = None         # sell price forecast [€/kWh]
 
-    decisions: dict = field(default_factory=dict)   # decision variables per component
-    states: dict = field(default_factory=dict)      # state trajectories per component
+    variables: dict = field(default_factory=dict)   # variables by name
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +76,7 @@ class HouseholdOptimizationProblem:
         self._load = load
         self._gen = gen
 
-    def solve(self, T: int, dt: float) -> HouseholdResult:
+    def solve(self, T: int, dt: timedelta) -> HouseholdResult:
         """
         Formulate and solve the household scheduling MILP.
 
@@ -84,12 +85,13 @@ class HouseholdOptimizationProblem:
 
         Args:
             T: Planning horizon in timesteps.
-            dt: Timestep duration [h].
+            dt: Timestep duration.
 
         Returns:
             HouseholdResult with optimal decisions, state trajectories, and
             the signal arrays used in this solve.
         """
+        dt_in_hours = dt.seconds / 3600
         price_buy = self._price_buy.forecast(T, dt)
         price_sell = self._price_sell.forecast(T, dt)
         load = self._load.forecast(T, dt)
@@ -110,14 +112,14 @@ class HouseholdOptimizationProblem:
         ub = np.full(n, np.inf)
 
         for t in range(T):
-            objective[idx_buy[t]] = price_buy[t] * dt
-            objective[idx_sell[t]] = -price_sell[t] * dt
+            objective[idx_buy[t]] = price_buy[t] * dt_in_hours
+            objective[idx_sell[t]] = -price_sell[t] * dt_in_hours
 
         lb[idx_buy.start: idx_buy.stop] = 0.0
         lb[idx_sell.start: idx_sell.stop] = 0.0
 
         for component in self._components:
-            component.contribute(reg, constraints, objective, lb, ub, T, dt)
+            component.contribute(reg, constraints, objective, lb, ub, T, dt_in_hours)
 
         # Grid balance: p_buy - p_sell = sum(component_net_power) + load - gen
         for t in range(T):
@@ -154,7 +156,7 @@ class HouseholdOptimizationProblem:
 
     @staticmethod
     def _extract_result(
-            x: np.ndarray,
+        x: np.ndarray,
         reg: VariableRegistry,
         objective: np.ndarray,
         idx_buy: range,
@@ -165,21 +167,10 @@ class HouseholdOptimizationProblem:
         load: np.ndarray,
         gen: np.ndarray,
     ) -> HouseholdResult:
-        decisions: dict = {}
-        states: dict = {}
+        variables: dict = {}
 
-        name_map = {
-            "battery_x": ("x_bat", decisions),
-            "battery_soc": ("soc_bat", states),
-            "ev_x": ("x_ev", decisions),
-            "ev_soc": ("soc_ev", states),
-            "hp_x": ("x_hp", decisions),
-            "hp_temp": ("temp_in", states),
-        }
-
-        for reg_key, (result_key, target) in name_map.items():
-            if reg_key in reg._blocks:
-                target[result_key] = np.array([x[i] for i in reg[reg_key]])
+        for name in reg.get_registered_names():
+            variables[name] = np.array([x[i] for i in reg[name]])
 
         return HouseholdResult(
             success=True,
@@ -191,6 +182,5 @@ class HouseholdOptimizationProblem:
             gen=gen,
             price_buy=price_buy,
             price_sell=price_sell,
-            decisions=decisions,
-            states=states,
+            variables=variables,
         )

@@ -6,7 +6,7 @@ from real_world_interfaces import Actuator
 from .state import SyntheticState
 
 
-class SyntheticActuator(Actuator[float]):
+class SyntheticActuator(Actuator[float, float]):
     """
     Actuator that applies a power setpoint to a SyntheticState.
 
@@ -22,12 +22,8 @@ class SyntheticActuator(Actuator[float]):
     def __init__(self, state: SyntheticState) -> None:
         self._state = state
 
-    def execute(self, command: float) -> None:
+    def execute(self, command: float, expected_next_state: float) -> None:
         """
-        Apply the power command to the device and advance the simulated state.
-
-        Args:
-            command: Power setpoint [kW] as computed by the optimizer.
-                     Positive = consuming/charging, negative = producing/discharging.
+        Sets the internal state to the expected_next_state computed by the optimization process
         """
-        self._state.step(command)
+        self._state.set(command)

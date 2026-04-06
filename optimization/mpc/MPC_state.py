@@ -10,7 +10,7 @@ MPCHistory: ordered sequence of MPCStep records.
 from __future__ import annotations
 from dataclasses import dataclass, field
 
-from optimization.milp.household import HouseholdResult
+from optimization.milp.household import HouseholdResult, HouseholdOptimizationProblem
 
 
 @dataclass
@@ -18,6 +18,7 @@ class MPCStep:
     """Snapshot of a single MPC iteration."""
 
     step: int
+    optimization_problem: HouseholdOptimizationProblem
     result: HouseholdResult
 
 

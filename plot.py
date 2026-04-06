@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
 
+from optimization import HeatPumpModel, BatteryModel, EVModel
 from optimization.mpc import MPCHistory, MPCStep
 
 C_BATTERY = "#1976D2"
@@ -56,17 +57,19 @@ def _step_cost(s: MPCStep, dt: float) -> float:
             - s.result.p_sell[0] * s.result.price_sell[0]) * dt
 
 
-def _naive_step_cost(s: MPCStep, dt: float) -> float:
-    x_hp = float(s.result.decisions.get("x_hp", np.zeros(1))[0])
-    x_ev = float(s.result.decisions.get("x_ev", np.zeros(1))[0])
-    net  = s.result.load[0] + x_hp + x_ev - s.result.gen[0]
-    return (max(0.0, net) * s.result.price_buy[0]
-            - max(0.0, -net) * s.result.price_sell[0]) * dt
-
-
 def plot_results(history: MPCHistory, dt: float, path: str = "outputs/mpc_results.png", show=True) -> None:
     steps = np.array([s.step for s in history.steps]) * dt
     w     = 0.55 * dt
+
+    heat_pump = next((c for c in history.steps[0].optimization_problem._components if isinstance(c, HeatPumpModel)), None)
+    temp_variable_name = heat_pump._temp_variable_name if heat_pump else None
+    power_setpoint_heat_pump = heat_pump._power_setpoint_variable_name if heat_pump else None
+    battery = next((c for c in history.steps[0].optimization_problem._components if isinstance(c, BatteryModel)), None)
+    soc_battery_variable_name = battery._soc_variable_name if battery else None
+    power_setpoint_battery = battery._power_setpoint_variable_name if battery else None
+    ev = next((c for c in history.steps[0].optimization_problem._components if isinstance(c, EVModel)), None)
+    soc_ev_variable_name = ev._soc_variable_name if ev else None
+    power_setpoint_ev = ev._power_setpoint_variable_name if ev else None
 
     price_buy  = np.array([s.result.price_buy[0]  for s in history.steps])
     price_sell = np.array([s.result.price_sell[0] for s in history.steps])
@@ -74,17 +77,15 @@ def plot_results(history: MPCHistory, dt: float, path: str = "outputs/mpc_result
     p_sell     = np.array([s.result.p_sell[0]     for s in history.steps])
     load       = np.array([s.result.load[0]        for s in history.steps])
     gen        = np.array([s.result.gen[0]          for s in history.steps])
-    temp_in    = np.array([s.result.states.get("temp_in", np.zeros(2))[0] for s in history.steps])
-    soc_bat    = np.array([s.result.states.get("soc_bat", np.zeros(2))[0] for s in history.steps])
-    soc_ev     = np.array([s.result.states.get("soc_ev",  np.zeros(2))[0] for s in history.steps])
-    x_bat      = np.array([float(s.result.decisions.get("x_bat", np.zeros(1))[0]) for s in history.steps])
-    x_ev       = np.array([float(s.result.decisions.get("x_ev",  np.zeros(1))[0]) for s in history.steps])
-    x_hp       = np.array([float(s.result.decisions.get("x_hp",  np.zeros(1))[0]) for s in history.steps])
+    temp_in    = np.array([s.result.variables.get(temp_variable_name, np.zeros(2))[0] for s in history.steps])
+    soc_bat    = np.array([s.result.variables.get(soc_battery_variable_name, np.zeros(2))[0] for s in history.steps])
+    soc_ev     = np.array([s.result.variables.get(soc_ev_variable_name, np.zeros(2))[0] for s in history.steps])
+    x_bat      = np.array([float(s.result.variables.get(power_setpoint_battery, np.zeros(1))[0]) for s in history.steps])
+    x_ev       = np.array([float(s.result.variables.get(power_setpoint_ev,  np.zeros(1))[0]) for s in history.steps])
+    x_hp       = np.array([float(s.result.variables.get(power_setpoint_heat_pump,  np.zeros(1))[0]) for s in history.steps])
 
     mpc_costs   = np.array([_step_cost(s, dt)       for s in history.steps])
-    naive_costs = np.array([_naive_step_cost(s, dt) for s in history.steps])
     cum_mpc     = np.cumsum(mpc_costs)
-    cum_naive   = np.cumsum(naive_costs)
 
     fig = plt.figure(figsize=(14, 16))
     fig.suptitle("Household Energy Scheduling — MPC", fontsize=13, fontweight="bold", y=0.99)
@@ -135,15 +136,9 @@ def plot_results(history: MPCHistory, dt: float, path: str = "outputs/mpc_result
     _style_ax(ax6, "Temperature [°C]")
 
     final_mpc   = cum_mpc[-1]
-    final_naive = cum_naive[-1]
-    savings     = final_naive - final_mpc
     ax7.plot(steps, cum_mpc,   "o-",  color=C_MPC,   lw=2, ms=4,
              label=f"MPC  —  final: {final_mpc:.2f} €")
-    ax7.plot(steps, cum_naive, "s--", color=C_NAIVE, lw=2, ms=4,
-             label=f"Naive  —  final: {final_naive:.2f} €")
-    ax7.fill_between(steps, cum_mpc, cum_naive, where=cum_naive >= cum_mpc,
-                     alpha=0.12, color="#4CAF50", label=f"Savings: {savings:.2f} €")
-    ax7.set_title("Cumulative Cost: MPC vs Naive", fontsize=9, fontweight="bold")
+    ax7.set_title("Cumulative Cost: MPC", fontsize=9, fontweight="bold")
     _style_ax(ax7, "Cumulative cost [€]")
 
     for ax in [ax1, ax2, ax3, ax4, ax5, ax6, ax7]:
@@ -155,5 +150,3 @@ def plot_results(history: MPCHistory, dt: float, path: str = "outputs/mpc_result
 
     print(f"\nPlot saved to {path}")
     print(f"  MPC total cost:   {final_mpc:.4f} €")
-    print(f"  Naive total cost: {final_naive:.4f} €")
-    print(f"  Savings (MPC):    {savings:.4f} €")

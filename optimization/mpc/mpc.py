@@ -20,6 +20,10 @@ Ordering contract:
 
 from __future__ import annotations
 
+from datetime import timedelta
+from time import sleep
+
+from forecasting.time import Time
 from forecasting.time_series import TimeSeries
 from optimization.milp.physical_entity import PhysicalEntity
 from optimization.milp.household import HouseholdOptimizationProblem
@@ -53,7 +57,7 @@ class MPC:
         gen: TimeSeries,
         extra_series: list[TimeSeries],
         T_horizon: int,
-        dt: float,
+        dt: timedelta,
     ) -> None:
         self.entities = entities
         self._price_buy = price_buy
@@ -71,19 +75,21 @@ class MPC:
             gen=gen,
         )
 
-    def run(self, T_total: int) -> MPCHistory:
+    def run(self, T_total: int, fast_forward: bool) -> MPCHistory:
         """
         Run the MPC loop for T_total steps.
 
         Args:
             T_total: Number of MPC steps to execute.
+            fast_forward: If false, wait for self.dt between steps. If false assume a simulation setup and fast forward
+            time using Time.set(...)
 
         Returns:
             MPCHistory containing all completed steps.
         """
         history = MPCHistory()
 
-        print(f"{'t':>3}  {'Cost':>7}  {'p_buy':>6}  {'p_sell':>6}  {'Decisions'}")
+        print(f"{'t':>3}  {'Cost':>7}  {'p_buy':>6}  {'p_sell':>6}  {'Variables'}")
         print("─" * 65)
 
         for step in range(T_total):
@@ -92,8 +98,15 @@ class MPC:
             if mpc_step is None:
                 continue
             history.append(mpc_step)
+
+            if fast_forward:
+                now = Time.get_instance().get()
+                Time.get_instance().set(now + self.dt)
+            else:
+                sleep(self.dt.total_seconds())
+
             dec_str = "  ".join(
-                f"{k}={v[0]:.2f}" for k, v in mpc_step.result.decisions.items()
+                f"{k}={v[0]:.2f}" for k, v in mpc_step.result.variables.items()
             )
             print(
                 f"{step:>3}  {mpc_step.result.total_cost:>7.4f}  "
@@ -106,13 +119,10 @@ class MPC:
     def _step(self, step: int, T_h: int) -> MPCStep | None:
         """Execute a single MPC step. Returns None if solve failed."""
 
-        # 1. Observe all series
-        self._price_buy.observe()
-        self._price_sell.observe()
-        self._load.observe()
-        self._gen.observe()
-        for ts in self._extra_series:
+        # 1. Observe and forecast all series
+        for ts in self._extra_series + [self._price_buy, self._price_sell, self._load, self._gen]:
             ts.observe()
+            ts.forecast(T_h, self.dt)
 
         # 2. Observe all entities (sensor read → set_initial_state on model)
         for entity in self.entities:
@@ -129,4 +139,4 @@ class MPC:
         for entity in self.entities:
             entity.act(result)
 
-        return MPCStep(step=step, result=result)
+        return MPCStep(step=step, optimization_problem=self.household, result=result)

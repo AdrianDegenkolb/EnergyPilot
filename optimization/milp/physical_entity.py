@@ -10,6 +10,7 @@ heat pump). It holds the three components of the sense-plan-act loop:
 """
 
 from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 from real_world_interfaces import Sensor, Actuator
@@ -52,7 +53,7 @@ class PhysicalEntity:
 
     def act(self, result: HouseholdResult) -> float:
         """
-        Extract the optimal first-step power command and execute it.
+        Extract the optimal first-step power setpoint and execute it.
 
         Args:
             result: Full MILP result from HouseholdOptimizationProblem.solve().
@@ -60,6 +61,7 @@ class PhysicalEntity:
         Returns:
             The power command sent to the actuator [kW].
         """
-        command = self.model.extract_command(result)
-        self.actuator.execute(command)
-        return command
+        power_setpoint = self.model.extract_optimal_power_setpoint(result)
+        expected_next_state = self.model.extract_expected_next_step_state(result)
+        self.actuator.execute(power_setpoint, expected_next_state)
+        return power_setpoint

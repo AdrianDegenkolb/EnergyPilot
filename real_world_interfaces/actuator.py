@@ -15,8 +15,9 @@ from abc import ABC, abstractmethod
 from typing import TypeVar, Generic
 
 T = TypeVar("T")
+S = TypeVar("S")
 
-class Actuator(ABC, Generic[T]):
+class Actuator(ABC, Generic[T, S]):
     """
     Abstract base for all actuator types.
 
@@ -25,14 +26,17 @@ class Actuator(ABC, Generic[T]):
     """
 
     @abstractmethod
-    def execute(self, action: T) -> None:
+    def execute(self, action: T, expected_next_state: S) -> None:
         """
-        Apply the given action to the device.
+        Apply the given action of type T to the device.
+        Alternatively, the expected_next_state of type S can be set directly
 
         Args:
             action: Mapping of signal names to values, as returned by
                     OptimizationComponent.extract_action(). The keys and
                     their semantics are defined by the specific actuator
                     and its paired OptimizationComponent.
+            expected_next_state: The expected next state of the device after
+                    executing the action, as computed by the device's physics
         """
         ...
