@@ -1,5 +1,5 @@
 @startuml energy_model
-title EnergyPilot - Optimization Components
+title EnergyPilot — Optimization Components
 
 skinparam defaultFontSize 13
 skinparam rectangleFontSize 12
@@ -11,11 +11,11 @@ rectangle "External Grid" as grid #LightBlue {
 }
 
 rectangle "Household" as house #LightYellow {
-    rectangle "PV\ngen^t (forecast)" as pv #Gold
-    rectangle "Base Load\nload^t (forecast)" as load #Pink
+    rectangle "PV Generation\ngen^t  (TimeSeries forecast)" as gen #Gold
+    rectangle "Base Load\nload^t  (TimeSeries forecast)" as load #Pink
 
     rectangle "Battery\nx_bat^t ∈ [−dis_max, ch_max]\nsoc_bat^t ∈ [soc_min, cap]" as bat #LightGreen
-    rectangle "Electric Vehicle\nx_ev^t ∈ [0, ch_max]\nsoc_ev^{T*} ≥ target_soc" as ev #LightGreen
+    rectangle "Electric Vehicle\nx_ev^t ∈ [−dis_max, ch_max]\nsoc_ev^{T*} ≥ target_soc" as ev #LightGreen
     rectangle "Heat Pump\nx_hp^t ∈ [0, p_max]\ntemp^t ∈ [t_min, t_max]" as hp #Orange
 }
 
@@ -23,9 +23,9 @@ rectangle "Energy Balance\np_buy^t − p_sell^t =\nload^t + x_hp^t + x_ev^t + x_
 
 grid --> balance : p_buy^t
 balance --> grid : p_sell^t
-pv --> balance : gen^t
+gen  --> balance : gen^t
 load --> balance : load^t
-bat --> balance : x_bat^t
-ev --> balance : x_ev^t
-hp --> balance : x_hp^t
+bat  --> balance : x_bat^t
+ev   --> balance : x_ev^t
+hp   --> balance : x_hp^t
 @enduml

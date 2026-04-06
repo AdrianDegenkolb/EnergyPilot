@@ -1,0 +1,159 @@
+"""Plotting logic for MPC simulation results."""
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import gridspec
+
+from optimization.mpc import MPCHistory, MPCStep
+
+C_BATTERY = "#1976D2"
+C_EV      = "#388E3C"
+C_HP      = "#F57C00"
+C_PV      = "#FBC02D"
+C_LOAD    = "#D32F2F"
+C_BUY     = "#C2185B"
+C_SELL    = "#7B1FA2"
+C_TEMP_IN = "#E53935"
+C_MPC     = "#1565C0"
+C_NAIVE   = "#EF6C00"
+
+
+def _style_ax(ax: plt.Axes, ylabel: str, legend_loc: str = "best") -> None:
+    ax.set_ylabel(ylabel, fontsize=9)
+    ax.tick_params(labelsize=8)
+    ax.grid(True, alpha=0.2, linestyle="--")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(fontsize=8, loc=legend_loc, framealpha=0.7)
+
+
+def _stacked_bars(
+    ax: plt.Axes,
+    steps: np.ndarray,
+    components: list[tuple[str, np.ndarray, str]],
+    width: float,
+) -> None:
+    pos_bottom = np.zeros(len(steps))
+    neg_bottom = np.zeros(len(steps))
+    for label, values, color in components:
+        values = np.asarray(values, dtype=float)
+        pos = np.where(values > 0, values, 0.0)
+        neg = np.where(values < 0, values, 0.0)
+        if pos.any():
+            ax.bar(steps, pos, width=width, bottom=pos_bottom,
+                   label=label, color=color, alpha=0.85)
+            pos_bottom += pos
+        if neg.any():
+            ax.bar(steps, neg, width=width, bottom=neg_bottom,
+                   label=f"{label} (↓)" if pos.any() else label,
+                   color=color, alpha=0.45)
+            neg_bottom += neg
+
+
+def _step_cost(s: MPCStep, dt: float) -> float:
+    return (s.result.p_buy[0] * s.result.price_buy[0]
+            - s.result.p_sell[0] * s.result.price_sell[0]) * dt
+
+
+def _naive_step_cost(s: MPCStep, dt: float) -> float:
+    x_hp = float(s.result.decisions.get("x_hp", np.zeros(1))[0])
+    x_ev = float(s.result.decisions.get("x_ev", np.zeros(1))[0])
+    net  = s.result.load[0] + x_hp + x_ev - s.result.gen[0]
+    return (max(0.0, net) * s.result.price_buy[0]
+            - max(0.0, -net) * s.result.price_sell[0]) * dt
+
+
+def plot_results(history: MPCHistory, dt: float, path: str = "outputs/mpc_results.png", show=True) -> None:
+    steps = np.array([s.step for s in history.steps]) * dt
+    w     = 0.55 * dt
+
+    price_buy  = np.array([s.result.price_buy[0]  for s in history.steps])
+    price_sell = np.array([s.result.price_sell[0] for s in history.steps])
+    p_buy      = np.array([s.result.p_buy[0]      for s in history.steps])
+    p_sell     = np.array([s.result.p_sell[0]     for s in history.steps])
+    load       = np.array([s.result.load[0]        for s in history.steps])
+    gen        = np.array([s.result.gen[0]          for s in history.steps])
+    temp_in    = np.array([s.result.states.get("temp_in", np.zeros(2))[0] for s in history.steps])
+    soc_bat    = np.array([s.result.states.get("soc_bat", np.zeros(2))[0] for s in history.steps])
+    soc_ev     = np.array([s.result.states.get("soc_ev",  np.zeros(2))[0] for s in history.steps])
+    x_bat      = np.array([float(s.result.decisions.get("x_bat", np.zeros(1))[0]) for s in history.steps])
+    x_ev       = np.array([float(s.result.decisions.get("x_ev",  np.zeros(1))[0]) for s in history.steps])
+    x_hp       = np.array([float(s.result.decisions.get("x_hp",  np.zeros(1))[0]) for s in history.steps])
+
+    mpc_costs   = np.array([_step_cost(s, dt)       for s in history.steps])
+    naive_costs = np.array([_naive_step_cost(s, dt) for s in history.steps])
+    cum_mpc     = np.cumsum(mpc_costs)
+    cum_naive   = np.cumsum(naive_costs)
+
+    fig = plt.figure(figsize=(14, 16))
+    fig.suptitle("Household Energy Scheduling — MPC", fontsize=13, fontweight="bold", y=0.99)
+    gs = gridspec.GridSpec(4, 2, figure=fig, hspace=0.5, wspace=0.35)
+
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax3 = fig.add_subplot(gs[1, 0])
+    ax4 = fig.add_subplot(gs[1, 1])
+    ax5 = fig.add_subplot(gs[2, 0])
+    ax6 = fig.add_subplot(gs[2, 1])
+    ax7 = fig.add_subplot(gs[3, :])
+
+    ax1.plot(steps, price_buy,  "-",  color=C_BUY,  lw=1.5, label="Buy [€/kWh]")
+    ax1.plot(steps, price_sell, "--", color=C_SELL, lw=1.5, label="Sell [€/kWh]")
+    ax1.set_title("Energy Prices", fontsize=9, fontweight="bold")
+    _style_ax(ax1, "Price [€/kWh]")
+
+    ax2.plot(steps, load, "-",  color=C_LOAD, lw=1.5, label="Load [kW]")
+    ax2.plot(steps, gen,  "--", color=C_PV,   lw=1.5, label="PV gen [kW]")
+    ax2.set_title("Load & Generation", fontsize=9, fontweight="bold")
+    _style_ax(ax2, "Power [kW]")
+
+    ax3.bar(steps,  p_buy,  width=w, color=C_BUY,  alpha=0.85, label="Import [kW]")
+    ax3.bar(steps, -p_sell, width=w, color=C_SELL, alpha=0.85, label="Export [kW]")
+    ax3.axhline(0, color="black", lw=0.4)
+    ax3.set_title("Grid Import / Export", fontsize=9, fontweight="bold")
+    _style_ax(ax3, "Power [kW]")
+
+    _stacked_bars(ax4, steps, [
+        ("Battery",   x_bat, C_BATTERY),
+        ("EV",        x_ev,  C_EV),
+        ("Heat pump", x_hp,  C_HP),
+    ], width=w)
+    ax4.axhline(0, color="black", lw=0.4)
+    ax4.set_title("Scheduling Decisions", fontsize=9, fontweight="bold")
+    _style_ax(ax4, "Power [kW]")
+
+    ax5.plot(steps, soc_bat, "o-", color=C_BATTERY, lw=1.5, ms=4, label="Battery [kWh]")
+    ax5.plot(steps, soc_ev,  "s-", color=C_EV,      lw=1.5, ms=4, label="EV [kWh]")
+    ax5.set_title("State of Charge", fontsize=9, fontweight="bold")
+    _style_ax(ax5, "SoC [kWh]")
+
+    ax6.plot(steps, temp_in, "-", color=C_TEMP_IN, lw=1.5, label="Indoor [°C]")
+    ax6.axhline(20.0, color=C_TEMP_IN, lw=0.8, ls=":", alpha=0.6, label="Min comfort")
+    ax6.axhline(23.0, color=C_TEMP_IN, lw=0.8, ls=":", alpha=0.4, label="Max comfort")
+    ax6.set_title("Heat Pump & Temperature", fontsize=9, fontweight="bold")
+    _style_ax(ax6, "Temperature [°C]")
+
+    final_mpc   = cum_mpc[-1]
+    final_naive = cum_naive[-1]
+    savings     = final_naive - final_mpc
+    ax7.plot(steps, cum_mpc,   "o-",  color=C_MPC,   lw=2, ms=4,
+             label=f"MPC  —  final: {final_mpc:.2f} €")
+    ax7.plot(steps, cum_naive, "s--", color=C_NAIVE, lw=2, ms=4,
+             label=f"Naive  —  final: {final_naive:.2f} €")
+    ax7.fill_between(steps, cum_mpc, cum_naive, where=cum_naive >= cum_mpc,
+                     alpha=0.12, color="#4CAF50", label=f"Savings: {savings:.2f} €")
+    ax7.set_title("Cumulative Cost: MPC vs Naive", fontsize=9, fontweight="bold")
+    _style_ax(ax7, "Cumulative cost [€]")
+
+    for ax in [ax1, ax2, ax3, ax4, ax5, ax6, ax7]:
+        ax.set_xlabel("Time [h]", fontsize=8)
+
+    plt.savefig(path, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+
+    print(f"\nPlot saved to {path}")
+    print(f"  MPC total cost:   {final_mpc:.4f} €")
+    print(f"  Naive total cost: {final_naive:.4f} €")
+    print(f"  Savings (MPC):    {savings:.4f} €")

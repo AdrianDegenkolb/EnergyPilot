@@ -1,145 +1,175 @@
 @startuml class_diagram
-title EnergyPilot - Class Structure
+title EnergyPilot — Class Structure
 
 skinparam classAttributeIconSize 0
-skinparam classFontSize 13
-skinparam packageFontSize 14
+skinparam classFontSize 12
+skinparam packageFontSize 13
+skinparam packageBackgroundColor #FAFAFA
+skinparam packageBorderColor #AAAAAA
 
-package "Forecast" {
-    class ForecastParams {
-        +T: int
-        +dt: float
-        --
-        +price_buy_mean: ndarray
-        +price_buy_std: ndarray
-        +price_sell_mean: ndarray
-        +price_sell_std: ndarray
-        +pv_mean: ndarray
-        +pv_std: ndarray
-        +load_mean: ndarray
-        +load_std: ndarray
-        +temp_out_mean: ndarray
-        +temp_out_std: ndarray
+' ─────────────────────────────────────────────
+package "real_world_interfaces" {
+    abstract class Sensor<T> {
+        +{abstract} read(): T
     }
 
-    class ForecastTrajectory {
-        +T: int
-        +dt: float
-        --
-        +price_buy: ndarray
-        +price_sell: ndarray
-        +pv: ndarray
-        +load: ndarray
-        +temp_out: ndarray
-        --
-        +{static} sample(params, rng): ForecastTrajectory
+    abstract class Actuator<T> {
+        +{abstract} execute(command: T)
     }
-
-    ForecastParams ..> ForecastTrajectory : sample()
 }
 
-package "Entities" {
-    abstract class Entity {
+' ─────────────────────────────────────────────
+package "synthetic" {
+    class SyntheticState {
+        -value: float
+        -dt: float
+        -update_fn: Callable | None
+        +read(): float
+        +set(value: float)
+        +step(power: float)
+        +make_sensor(): SyntheticSensor
+        +make_sensor_actuator(): tuple
+    }
+
+    class SyntheticSensor {
+        +read(): float
+    }
+
+    class SyntheticActuator {
+        +execute(command: float)
+    }
+
+    SyntheticSensor --|> Sensor
+    SyntheticActuator --|> Actuator
+    SyntheticState ..> SyntheticSensor : creates
+    SyntheticState ..> SyntheticActuator : creates
+    SyntheticSensor --> SyntheticState : reads
+    SyntheticActuator --> SyntheticState : steps
+}
+
+' ─────────────────────────────────────────────
+package "forecasting" {
+    abstract class SeriesForecaster {
+        +{abstract} forecast(history, T, dt): ndarray
+    }
+
+    class TimeSeries {
+        -sensor: Sensor[float]
+        -forecaster: SeriesForecaster
+        -history: deque[float]
+        +observe(): float
+        +forecast(T, dt): ndarray
+        +latest: float
+    }
+
+    TimeSeries --> Sensor
+    TimeSeries --> SeriesForecaster
+}
+
+' ─────────────────────────────────────────────
+package "optimization.milp" {
+    abstract class OptimizationComponent {
         +{abstract} register(reg, T)
-        +{abstract} contribute(reg, constraints, objective, T, dt)
-        +{abstract} net_power(reg, x, T): ndarray
-        +{abstract} bounds(T): tuple
+        +{abstract} contribute(reg, constraints, objective, lb, ub, T, dt)
+        +{abstract} net_power(n, t): tuple
+        +{abstract} set_initial_state(value: float)
+        +{abstract} extract_command(result): float
     }
 
-    class Battery {
-        +capacity: float
-        +soc_init: float
-        +charge_max: float
-        +discharge_max: float
-        +soc_min: float
+    class BatteryModel {
+        +capacity, soc_init, soc_min: float
+        +charge_max, discharge_max: float
         +efficiency: float
-        --
-        x_bat^t ∈ [−discharge_max, charge_max]
-        soc_bat^t ∈ [soc_min, capacity]
-        soc^{t+1} = soc^t + x^t · dt
     }
 
-    class ElectricVehicle {
-        +capacity: float
-        +soc_init: float
-        +charge_max: float
+    class EVModel {
+        +capacity, soc_init: float
+        +charge_max, discharge_max: float
         +target_soc: float
         +target_timestep: int
         +efficiency: float
-        --
-        x_ev^t ∈ [0, charge_max]
-        soc_ev^t ∈ [0, capacity]
-        soc^{t+1} = soc^t + x^t · dt
-        soc^{T_target} ≥ target_soc
     }
 
-    class HeatPump {
-        +temp_init: float
-        +temp_min: ndarray
-        +temp_max: ndarray
-        +temp_out: ndarray
-        +max_power: float
-        +C_therm: float
-        +lambda_: float
-        +cop_eta: float
-        --
-        x_hp^t ∈ [0, max_power]
-        temp^{t+1} = temp^t + cop^t·x^t·dt/C
-                   − λ·(temp^t − T_out^t)·dt
-        temp^t ∈ [temp_min^t, temp_max^t]
+    class HeatPumpModel {
+        +temp_init, max_power: float
+        +C_therm, lambda_, cop_eta: float
+        +temp_min, temp_max: ndarray
+        -temp_out_series: TimeSeries
     }
 
-    Entity <|-- Battery
-    Entity <|-- ElectricVehicle
-    Entity <|-- HeatPump
-}
-
-package "Optimisation" {
-    class VariableRegistry {
-        +n_vars: int
-        --
-        +register(name, count): range
-        +__getitem__(name): range
+    class PhysicalEntity {
+        +sensor: Sensor[float]
+        +model: OptimizationComponent
+        +actuator: Actuator
+        +observe(): float
+        +act(result): float
     }
 
-    class Constraints {
-        +rows: list
-        +lo: list
-        +hi: list
-        --
-        +add_eq(row, val)
-        +add_ineq(row, lo, hi)
+    class HouseholdOptimizationProblem {
+        -components: list[OptimizationComponent]
+        -price_buy, price_sell: TimeSeries
+        -load, gen: TimeSeries
+        +solve(T, dt): HouseholdResult
     }
 
-    class Household {
-        +battery: Battery
-        +ev: ElectricVehicle
-        +heat_pump: HeatPump
-        --
-        +solve(trajectory): OptimisationResult
-    }
-
-    class OptimisationResult {
+    class HouseholdResult {
         +success: bool
         +total_cost: float
-        +message: str
-        --
-        +x_bat: ndarray
-        +x_ev: ndarray
-        +x_hp: ndarray
-        +p_buy: ndarray
-        +p_sell: ndarray
-        +soc_bat: ndarray
-        +soc_ev: ndarray
-        +temp_in: ndarray
+        +p_buy, p_sell: ndarray
+        +price_buy, price_sell: ndarray
+        +load, gen: ndarray
+        +decisions: dict
+        +states: dict
     }
 
-    Household o-- Battery
-    Household o-- ElectricVehicle
-    Household o-- HeatPump
-    Household ..> VariableRegistry : uses
-    Household ..> Constraints : builds
-    Household ..> OptimisationResult : returns
-    Household ..> ForecastTrajectory : takes
+    BatteryModel --|> OptimizationComponent
+    EVModel --|> OptimizationComponent
+    HeatPumpModel --|> OptimizationComponent
+    HeatPumpModel --> TimeSeries : temp_out_series
+    PhysicalEntity --> Sensor
+    PhysicalEntity --> OptimizationComponent
+    PhysicalEntity --> Actuator
+    HouseholdOptimizationProblem o-- OptimizationComponent
+    HouseholdOptimizationProblem --> TimeSeries
+    HouseholdOptimizationProblem ..> HouseholdResult : returns
 }
+
+' ─────────────────────────────────────────────
+package "optimization.mpc" {
+    class MPC {
+        +entities: list[PhysicalEntity]
+        +household: HouseholdOptimizationProblem
+        -price_buy, price_sell: TimeSeries
+        -load, gen: TimeSeries
+        -extra_series: list[TimeSeries]
+        +T_horizon: int
+        +dt: float
+        +run(T_total): MPCHistory
+        #_step(step, T_h): MPCStep | None
+    }
+
+    class SyntheticMPC {
+        -signal_driver: Callable[[int], None]
+        #_step(step, T_h): MPCStep | None
+    }
+
+    class MPCStep {
+        +step: int
+        +result: HouseholdResult
+    }
+
+    class MPCHistory {
+        +steps: list[MPCStep]
+        +append(step)
+    }
+
+    SyntheticMPC --|> MPC
+    MPC o-- PhysicalEntity
+    MPC --> HouseholdOptimizationProblem
+    MPC --> TimeSeries
+    MPC ..> MPCHistory : returns
+    MPCHistory o-- MPCStep
+    MPCStep --> HouseholdResult
+}
+
 @enduml

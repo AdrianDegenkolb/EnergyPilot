@@ -5,33 +5,34 @@ skinparam defaultFontSize 13
 
 start
 
-:Initialise state\n(soc_bat, soc_ev, temp_in);
+:Build TimeSeries\n(sensor + forecaster per signal);
+
+:Build OptimizationComponents\n(BatteryModel, EVModel, HeatPumpModel);
+
+:Build PhysicalEntities\n(sensor + model + actuator per device);
 
 repeat
-    :Observe real values at t=0\n(price_buy, price_sell, pv, load, temp_out);
 
-    :Build ForecastParams\n— t=0: real observations (std=0)\n— t>0: distributions from forecast model;
+    :Observe all TimeSeries\n— sensor.read() → append history\n— invalidate forecast cache;
 
-    :Sample ForecastTrajectory\nover horizon [t, t+T];
+    :Observe all PhysicalEntities\n— sensor.read() → model.set_initial_state(value);
 
-    :Rebuild entities with\ncurrent state as initial conditions;
-
-    :Formulate MILP\n——————————————\nVariables: x_bat, x_ev, x_hp, p_buy, p_sell\nStates:    soc_bat, soc_ev, temp_in\nObjective: min Σ price_buy·p_buy − price_sell·p_sell\nBalance:   p_buy − p_sell = load + x_hp + x_ev + x_bat − gen\nDynamics:  SoC and temperature updates\nConstraints: bounds + EV deadline;
+    :HouseholdOptimizationProblem.solve(T_h, dt)\n——————————————————————\nForecasts: price_buy, price_sell, load, gen\nVariables: x_bat, x_ev, x_hp, p_buy, p_sell\nStates:    soc_bat, soc_ev, temp_in\nObjective: min Σ price_buy·p_buy − price_sell·p_sell\nBalance:   p_buy − p_sell = load + x_hp + x_ev + x_bat − gen\nDynamics:  SoC and temperature transitions\nConstraints: bounds + EV deadline + comfort;
 
     :Solve MILP (HiGHS via scipy.milp);
 
     if (feasible?) then (yes)
-        :Apply first timestep decisions\nx_bat[0], x_ev[0], x_hp[0];
-        :Advance state\nsoc_bat, soc_ev, temp_in;
+        :For each PhysicalEntity:\ncommand = model.extract_command(result)\nactuator.execute(command)\n→ SyntheticState.step(command)\n→ advances SoC / temperature;
+        :Record MPCStep\n(step index + HouseholdResult);
     else (no)
-        :Log failure\nkeep state;
+        :Log failure — skip step;
     endif
 
     :t = t + 1;
 
 repeat while (t < T_total)
 
-:Output results and plots;
+:plot_results(history, dt);
 
 stop
 @enduml
