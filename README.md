@@ -6,6 +6,24 @@ EnergyPilot is a modular framework for cost-optimal household energy scheduling.
 
 Electricity prices vary significantly throughout the day. Modern households have increasing flexibility in *when* they consume energy: a battery can be charged during cheap hours, an EV does not need to start charging the moment it is plugged in, and a heat pump can pre-heat a building before prices rise. EnergyPilot makes these decisions automatically, guided by forecasts of prices, solar generation, and weather.
 
+<div style="display: flex; gap: 40px; justify-content: center;">
+  <div style="text-align: center;">
+    <h3>Suboptimal Policy</h3>
+    <p>buys power when needed</p>
+    <img src="diagrams/mpc_results_forecast_constant.png" width="400">
+  </div>
+  <div style="text-align: center;">
+    <h3>Optimal Policy</h3>
+    <p>buys power when cheap</p>
+    <img src="diagrams/mpc_results_forecast_lookup.png" width="400">
+  </div>
+</div>
+
+<div style="text-align: center; margin-top: 20px;">
+  <img src="diagrams/baseline_comparison.png" width="820">
+</div>
+
+Buying power only when needed leads to high costs, especially during peak price periods. In contrast, the optimal policy anticipates price fluctuations and shifts consumption to cheaper times, resulting in significant cost savings.
 ## Approach
 
 The scheduling problem is formulated as a **Mixed Integer Linear Program (MILP)** solved within a **Model Predictive Control (MPC)** loop. At each timestep, the current system state is observed, a forecast trajectory is produced for the planning horizon, and the MILP finds optimal power setpoints for all controllable devices. Only the first step's commands are applied — then the loop repeats with fresh observations.
@@ -51,24 +69,22 @@ Base load and PV generation are uncontrollable forecast signals, not decision va
 
 ## Forecasting
 
-Each passive signal — prices, load, generation, outdoor temperature — is stored as a `TimeSeriesData` object: a sorted list of `(datetime, float)` pairs with linear interpolation. During simulation, signals are precomputed for the full horizon before the MPC loop starts.
+Each passive signal — prices, load, generation, outdoor temperature — is observed by a `Sensor` object and stored in a `TimeSeriesData`: a sorted list of `(datetime, float)` pairs with linear interpolation.
 
-Each signal is wrapped in a `TimeSeries`, which couples a `SyntheticExternalState` sensor (reads the precomputed data at the current simulation time) with a `SeriesForecaster` (maps the observed history to a trajectory over the planning horizon). The history is stored internally as a `TimeSeriesData` object, resampled at `dt` intervals before each forecast call.
+The past `TimeSeriesData` is forecasted after each new observation:
 
 Two baseline forecasters are provided in `forecasting/baseline_forecasters.py`:
 
-- **`LookupForecaster`** — perfect foresight; reads future values directly from the precomputed `TimeSeriesData`. Represents the theoretical optimum.
+- **`LookupForecaster`** — perfect foresight; reads future values directly from the precomputed `TimeSeriesData` (only available in simulation). Represents the theoretical optimum.
 - **`ConstantForecaster`** — naïve baseline; repeats the last observed value for the entire horizon.
 
-The main script runs the simulation once per forecasting mode, producing an individual result plot for each mode and a combined comparison plot showing cumulative costs across all modes — with the area between the cheapest and most expensive mode shaded.
-
-The forecasting layer is intentionally decoupled: any forecaster — a trained ML model, a weather API, a simple heuristic — can be dropped in by adding it to `FORECASTING_MODES` in `main.py`.
+The forecasting layer is intentionally decoupled: any forecaster — a trained ML model, a weather API, a simple heuristic — can be dropped in.
 
 ## Synthetic Simulation
 
 For development and testing, all sensors, actuators, and signals are replaced with synthetic counterparts.
 
-**Passive signals** (price, load, generation, outdoor temperature) are precomputed as `TimeSeriesData` objects using diurnal patterns and stored before the MPC loop starts. Each signal is exposed to the MPC via a `SyntheticExternalState`, which reads the interpolated value at the current simulation time from the `TimeSeriesData`.
+**Passive signals** (price, load, generation, outdoor temperature) are precomputed as `TimeSeriesData` objects and stored before the MPC loop starts. Each signal is exposed to the MPC via a `SyntheticExternalState`, which reads the value at the current simulation time from the `TimeSeriesData`.
 
 **Device states** (battery SoC, EV SoC, indoor temperature) are held in `SyntheticState` objects. After each solve, the `SyntheticActuator` advances the state to the expected next value computed by the optimizer — mirroring the real-world effect of applying the power setpoint.
 
@@ -82,15 +98,17 @@ The real-world interfaces remain unchanged — the distinction between synthetic
 EnergyPilot/
 ├── main.py                        Entry point — runs MPC for each forecasting mode
 ├── plot.py                        Per-mode result plots and forecasting comparison plot
-├── real_world_interfaces/         Sensor and Actuator abstractions
+├── core/                          Time, TimeSeriesData
+├── intercaces/                    Sensor and Actuator abstractions
 │   └── synthetic/                 SyntheticState, SyntheticExternalState, sensor, actuator
-├── forecasting/                   Time, TimeSeriesData, TimeSeries, forecaster interface
-│   └── baseline_forecasters.py    LookupForecaster, ConstantForecaster
-├── optimization/
+├── forecasting/                   TimeSeries, forecasters, baselines
+├── control/                       Policy for cost minimal power scheduling 
 │   ├── milp/                      Device models and MILP formulation
 │   └── mpc/                       MPC loop orchestration, MPCStep, MPCHistory
 └── outputs/                       Saved plots
 ```
+
+![package diagram](diagrams/package_diagram.svg)
 
 ## Dependencies
 

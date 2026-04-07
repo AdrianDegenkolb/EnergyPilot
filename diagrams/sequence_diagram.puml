@@ -1,0 +1,106 @@
+@startuml sequence_diagram
+title EnergyPilot — MPC Step Sequence
+
+skinparam defaultFontSize 12
+skinparam sequenceArrowFontSize 11
+skinparam sequenceParticipantFontSize 12
+
+participant "MPC" as mpc
+participant "Time" as time
+participant "TimeSeries" as ts
+participant "Sensor" as sensor
+participant "SeriesForecaster" as fc
+participant "PhysicalEntity" as pe
+participant "OptimizationComponent" as comp
+participant "HouseholdOptimization\nProblem" as milp
+participant "VariableRegistry" as reg
+participant "Constraints" as con
+participant "Actuator" as act
+
+loop step = 0 … T_total − 1
+
+    mpc -> time : get()
+    time --> mpc : timestamp
+
+    ' ── 1. Observe ─────────────────────────────────────────
+    group Observe all TimeSeries
+        mpc -> ts : observe()
+        ts -> sensor : read()
+        sensor --> ts : value
+        ts -> ts : add_measurement(timestamp, value)
+        ts --> mpc : value
+    end
+
+    ' ── 2. Forecast ─────────────────────────────────────────
+    group Forecast all TimeSeries
+        mpc -> ts : forecast(T_h, dt)
+        ts -> ts : _sample_history_equidistant(dt)
+        ts -> fc : forecast(history, T_h, dt)
+        fc --> ts : ndarray [T_h]
+        ts -> ts : cache result
+        ts --> mpc : ndarray [T_h]
+    end
+
+    ' ── 3. Seed device models ───────────────────────────────
+    group Observe all PhysicalEntities
+        mpc -> pe : observe()
+        pe -> sensor : read()
+        sensor --> pe : state value
+        pe -> comp : set_initial_state(value)
+        pe --> mpc : state value
+    end
+
+    ' ── 4. Solve MILP ───────────────────────────────────────
+    group Solve
+        mpc -> milp : solve(T_h, dt)
+
+        milp -> ts : forecast(T_h, dt)
+        ts --> milp : cached ndarray
+
+        create reg
+        milp -> reg : <<create>>
+        create con
+        milp -> con : <<create>>
+
+        loop for each OptimizationComponent
+            milp -> comp : register(reg, T_h)
+            comp -> reg : register(name, count)
+        end
+        milp -> reg : register("p_buy", T_h)
+        milp -> reg : register("p_sell", T_h)
+
+        loop for each OptimizationComponent
+            milp -> comp : contribute(reg, constraints, objective, lb, ub, T_h, dt)
+            comp -> con : add_eq(initial state row, value)
+            comp -> con : add_eq(dynamics rows, 0)
+            comp -> con : add_ineq(comfort / deadline rows)
+        end
+
+        loop t = 0 … T_h − 1  [grid balance]
+            milp -> comp : net_power(n, t)
+            comp --> milp : coeffs, rhs
+            milp -> con : add_eq(balance row, load[t] − gen[t] + rhs)
+        end
+
+        milp -> milp : scipy.milp (HiGHS)
+        milp --> mpc : HouseholdResult
+    end
+
+    ' ── 5. Act ──────────────────────────────────────────────
+    alt result.success
+        group Execute first action per PhysicalEntity
+            mpc -> pe : act(result)
+            pe -> comp : extract_optimal_power_setpoint(result)
+            comp --> pe : power
+            pe -> comp : extract_expected_next_step_state(result)
+            comp --> pe : next_state
+            pe -> act : execute(power, next_state)
+            pe --> mpc : power
+        end
+        mpc -> mpc : append MPCStep(step, timestamp, result)
+    else infeasible
+        mpc -> mpc : log failure — skip step
+    end
+end
+
+@enduml
