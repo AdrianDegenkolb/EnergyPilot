@@ -1,0 +1,34 @@
+@startuml package_diagram
+title EnergyPilot — Package Dependencies
+
+skinparam packageStyle rectangle
+skinparam packageFontSize 13
+skinparam packageBackgroundColor #FAFAFA
+skinparam packageBorderColor #AAAAAA
+
+package "interfaces" {
+    package "synthetic" {
+    }
+}
+
+package "forecasting" {
+}
+
+package "core" {
+}
+
+package "control" {
+    package "milp" {
+    }
+    package "mpc" {
+    }
+}
+
+synthetic  ..>  core
+forecasting ..> interfaces
+milp       ..>  forecasting
+control ..> interfaces
+mpc        ..>  milp
+mpc        ..>  forecasting
+
+@enduml
