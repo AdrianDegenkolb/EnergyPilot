@@ -21,10 +21,10 @@ from datetime import datetime, timedelta
 
 import numpy as np
 
-from real_world_interfaces import Sensor
+from core.time import Time
+from core.time_series_data import TimeSeriesData
+from interfaces import Sensor
 from .series_forecaster import SeriesForecaster
-from .time import Time
-from .time_series_data import TimeSeriesData
 
 
 class TimeSeries:

@@ -7,4 +7,3 @@ from .opt_components import (
     VariableRegistry,
     Constraints,
 )
-from .physical_entity import PhysicalEntity

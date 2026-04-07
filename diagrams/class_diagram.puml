@@ -13,22 +13,25 @@ package "real_world_interfaces" {
         +{abstract} read(): T
     }
 
-    abstract class Actuator<T> {
-        +{abstract} execute(command: T)
+    abstract class Actuator<T, S> {
+        +{abstract} execute(action: T, expected_next_state: S)
     }
 }
 
 ' ─────────────────────────────────────────────
-package "synthetic" {
+package "real_world_interfaces.synthetic" {
     class SyntheticState {
-        -value: float
-        -dt: float
-        -update_fn: Callable | None
+        -_value: float
         +read(): float
         +set(value: float)
-        +step(power: float)
         +make_sensor(): SyntheticSensor
         +make_sensor_actuator(): tuple
+    }
+
+    class SyntheticExternalState {
+        -_data: TimeSeriesData
+        +read(): float
+        +make_sensor(): SyntheticSensor
     }
 
     class SyntheticSensor {
@@ -36,7 +39,7 @@ package "synthetic" {
     }
 
     class SyntheticActuator {
-        +execute(command: float)
+        +execute(command: float, expected_next_state: float)
     }
 
     SyntheticSensor --|> Sensor
@@ -44,57 +47,96 @@ package "synthetic" {
     SyntheticState ..> SyntheticSensor : creates
     SyntheticState ..> SyntheticActuator : creates
     SyntheticSensor --> SyntheticState : reads
-    SyntheticActuator --> SyntheticState : steps
+    SyntheticActuator --> SyntheticState : sets
+    SyntheticExternalState ..> SyntheticSensor : creates
+    SyntheticExternalState --> TimeSeriesData : reads
 }
 
 ' ─────────────────────────────────────────────
 package "forecasting" {
+    class Time <<singleton>> {
+        +get(): datetime
+        +set(t: datetime)
+        +{static} get_instance(): Time
+    }
+
     abstract class SeriesForecaster {
-        +{abstract} forecast(history, T, dt): ndarray
+        +{abstract} forecast(history, T, dt: timedelta): ndarray
+        #_pin(mean, current): ndarray
+    }
+
+    class TimeSeriesData {
+        -_points: SortedList
+        +add_point(timestamp, value)
+        +get_value_at(timestamp): float
+        +trim_oldest(max_size)
+        +points: list
     }
 
     class TimeSeries {
-        -sensor: Sensor[float]
-        -forecaster: SeriesForecaster
-        -history: deque[float]
+        -_sensor: Sensor[float]
+        -_forecaster: SeriesForecaster
+        -_history: TimeSeriesData
+        -_max_history: int
         +observe(): float
-        +forecast(T, dt): ndarray
+        +add_measurement(timestamp, value)
+        +forecast(T, dt: timedelta): ndarray
+        +get_value_at(timestamp): float
         +latest: float
+        +history: list
+    }
+
+    class LookupForecaster {
+        -_data: TimeSeriesData
+        +forecast(history, T, dt): ndarray
+    }
+
+    class ConstantForecaster {
+        +forecast(history, T, dt): ndarray
     }
 
     TimeSeries --> Sensor
     TimeSeries --> SeriesForecaster
+    TimeSeries *-- TimeSeriesData : _history
+    LookupForecaster --|> SeriesForecaster
+    ConstantForecaster --|> SeriesForecaster
+    LookupForecaster --> TimeSeriesData
+    LookupForecaster --> Time
 }
 
 ' ─────────────────────────────────────────────
 package "optimization.milp" {
     abstract class OptimizationComponent {
+        +id: UUID
         +{abstract} register(reg, T)
-        +{abstract} contribute(reg, constraints, objective, lb, ub, T, dt)
+        +{abstract} contribute(reg, constraints, objective, lb, ub, T, dt: timedelta)
         +{abstract} net_power(n, t): tuple
         +{abstract} set_initial_state(value: float)
-        +{abstract} extract_command(result): float
+        +{abstract} extract_optimal_power_setpoint(result): float
+        +extract_expected_next_step_state(result): float
     }
 
     class BatteryModel {
-        +capacity, soc_init, soc_min: float
+        +capacity, soc_min: float
         +charge_max, discharge_max: float
         +efficiency: float
+        +soc_init: float | None
     }
 
     class EVModel {
-        +capacity, soc_init: float
+        +capacity, soc_min: float
         +charge_max, discharge_max: float
-        +target_soc: float
-        +target_timestep: int
+        +target_soc: float | None
+        +target_timestep: int | None
         +efficiency: float
+        +soc_init: float | None
     }
 
     class HeatPumpModel {
-        +temp_init, max_power: float
-        +C_therm, lambda_, cop_eta: float
         +temp_min, temp_max: ndarray
-        -temp_out_series: TimeSeries
+        +max_power, C_therm, lambda_, cop_eta: float
+        +temp_init: float | None
+        -_temp_out_series: TimeSeries
     }
 
     class PhysicalEntity {
@@ -106,20 +148,20 @@ package "optimization.milp" {
     }
 
     class HouseholdOptimizationProblem {
-        -components: list[OptimizationComponent]
-        -price_buy, price_sell: TimeSeries
-        -load, gen: TimeSeries
-        +solve(T, dt): HouseholdResult
+        -_components: list[OptimizationComponent]
+        -_price_buy, _price_sell: TimeSeries
+        -_load, _gen: TimeSeries
+        +solve(T, dt: timedelta): HouseholdResult
     }
 
     class HouseholdResult {
         +success: bool
         +total_cost: float
+        +message: str
         +p_buy, p_sell: ndarray
         +price_buy, price_sell: ndarray
         +load, gen: ndarray
-        +decisions: dict
-        +states: dict
+        +variables: dict
     }
 
     BatteryModel --|> OptimizationComponent
@@ -139,31 +181,29 @@ package "optimization.mpc" {
     class MPC {
         +entities: list[PhysicalEntity]
         +household: HouseholdOptimizationProblem
-        -price_buy, price_sell: TimeSeries
-        -load, gen: TimeSeries
-        -extra_series: list[TimeSeries]
+        -_price_buy, _price_sell: TimeSeries
+        -_load, _gen: TimeSeries
+        -_extra_series: list[TimeSeries]
         +T_horizon: int
-        +dt: float
-        +run(T_total): MPCHistory
-        #_step(step, T_h): MPCStep | None
-    }
-
-    class SyntheticMPC {
-        -signal_driver: Callable[[int], None]
+        +dt: timedelta
+        +run(T_total, fast_forward): MPCHistory
         #_step(step, T_h): MPCStep | None
     }
 
     class MPCStep {
         +step: int
+        +timestamp: datetime
+        +optimization_problem: HouseholdOptimizationProblem
         +result: HouseholdResult
     }
 
     class MPCHistory {
         +steps: list[MPCStep]
         +append(step)
+        +step_cost(i: int): float
+        +cumulative_cost(): ndarray
     }
 
-    SyntheticMPC --|> MPC
     MPC o-- PhysicalEntity
     MPC --> HouseholdOptimizationProblem
     MPC --> TimeSeries

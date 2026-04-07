@@ -11,8 +11,8 @@ from datetime import timedelta
 import numpy as np
 
 from forecasting.series_forecaster import SeriesForecaster
-from forecasting.time import Time
-from forecasting.time_series_data import TimeSeriesData
+from core.time import Time
+from core.time_series_data import TimeSeriesData
 
 
 class LookupForecaster(SeriesForecaster):

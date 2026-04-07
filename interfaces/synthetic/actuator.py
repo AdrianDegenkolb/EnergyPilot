@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from real_world_interfaces import Actuator
 from .state import SyntheticState
+from ..actuator import Actuator
 
 
 class SyntheticActuator(Actuator[float, float]):

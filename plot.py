@@ -6,8 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
 
-from optimization import HeatPumpModel, BatteryModel, EVModel
-from optimization.mpc import MPCHistory, MPCStep
+from control import HeatPumpModel, BatteryModel, EVModel, MPCHistory, MPCStep
 
 C_BATTERY = "#1976D2"
 C_EV      = "#388E3C"

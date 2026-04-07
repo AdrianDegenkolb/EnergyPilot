@@ -29,7 +29,7 @@ Base load and PV generation are uncontrollable forecast signals, not decision va
 ### Battery
 - Decision variable: `x_bat^t ∈ [−discharge_max, charge_max]` (positive = charging)
 - State: `soc_bat^t ∈ [soc_min, capacity]`
-- Dynamics: `soc^{t+1} = soc^t + x_bat^t · dt`
+- Dynamics: `soc^{t+1} = soc^t + x_bat^t · dt · efficiency`
 
 ### Electric Vehicle
 - Decision variable: `x_ev^t ∈ [−discharge_max, charge_max]`
@@ -42,36 +42,54 @@ Base load and PV generation are uncontrollable forecast signals, not decision va
 - State: indoor temperature `temp_in^t`
 - Dynamics:
   ```
-  temp_in^{t+1} = temp_in^t
-                + cop^t · x_hp^t · dt / C_therm
-                − λ · (temp_in^t − temp_out^t) · dt
+  temp_in^{t+1} = temp_in^t · (1 − λ·dt/C)
+                + cop^t · x_hp^t · dt / C
+                + λ · dt · temp_out^t / C
   ```
 - Comfort constraint: `temp_in^t ∈ [temp_min^t, temp_max^t]`
 - COP is precomputed per timestep from the outdoor temperature forecast (Carnot model), keeping the dynamics linear.
 
 ## Forecasting
 
-Each signal — prices, load, generation, outdoor temperature — is backed by a forecaster that maps observed history to a trajectory over the planning horizon. The first value is always pinned to the latest observation; subsequent steps use signal-specific patterns (diurnal curves, Gaussian bell for PV, etc.).
+Each passive signal — prices, load, generation, outdoor temperature — is stored as a `TimeSeriesData` object: a sorted list of `(datetime, float)` pairs with linear interpolation. During simulation, signals are precomputed for the full horizon before the MPC loop starts.
 
-The forecasting layer is intentionally decoupled: any forecaster — a trained ML model, a weather API, a simple heuristic — can be dropped in without touching the optimization layer.
+Each signal is wrapped in a `TimeSeries`, which couples a `SyntheticExternalState` sensor (reads the precomputed data at the current simulation time) with a `SeriesForecaster` (maps the observed history to a trajectory over the planning horizon). The history is stored internally as a `TimeSeriesData` object, resampled at `dt` intervals before each forecast call.
+
+Two baseline forecasters are provided in `forecasting/baseline_forecasters.py`:
+
+- **`LookupForecaster`** — perfect foresight; reads future values directly from the precomputed `TimeSeriesData`. Represents the theoretical optimum.
+- **`ConstantForecaster`** — naïve baseline; repeats the last observed value for the entire horizon.
+
+The main script runs the simulation once per forecasting mode, producing an individual result plot for each mode and a combined comparison plot showing cumulative costs across all modes — with the area between the cheapest and most expensive mode shaded.
+
+The forecasting layer is intentionally decoupled: any forecaster — a trained ML model, a weather API, a simple heuristic — can be dropped in by adding it to `FORECASTING_MODES` in `main.py`.
 
 ## Synthetic Simulation
 
-For development and testing, all sensors, actuators, and signals are replaced with synthetic counterparts. Device physics (SoC evolution, thermal dynamics) are simulated locally. Signal dynamics (diurnal price and load patterns) are driven by a step hook in `SyntheticMPC`. The real-world interfaces remain unchanged — the distinction between synthetic and production lives entirely inside individual sensor and actuator implementations.
+For development and testing, all sensors, actuators, and signals are replaced with synthetic counterparts.
+
+**Passive signals** (price, load, generation, outdoor temperature) are precomputed as `TimeSeriesData` objects using diurnal patterns and stored before the MPC loop starts. Each signal is exposed to the MPC via a `SyntheticExternalState`, which reads the interpolated value at the current simulation time from the `TimeSeriesData`.
+
+**Device states** (battery SoC, EV SoC, indoor temperature) are held in `SyntheticState` objects. After each solve, the `SyntheticActuator` advances the state to the expected next value computed by the optimizer — mirroring the real-world effect of applying the power setpoint.
+
+Simulation time is managed by the `Time` singleton, which is stepped forward by `dt` after each MPC iteration when running in `fast_forward` mode.
+
+The real-world interfaces remain unchanged — the distinction between synthetic and production lives entirely inside individual sensor and actuator implementations.
 
 ## Project Structure
 
 ```
 EnergyPilot/
-├── main.py                  Entry point
-├── plot.py                  Result visualisation
-├── real_world_interfaces/   Sensor and Actuator abstractions
-├── synthetic/               Synthetic simulation components
-├── forecasting/             Time series, forecaster interface and implementations
+├── main.py                        Entry point — runs MPC for each forecasting mode
+├── plot.py                        Per-mode result plots and forecasting comparison plot
+├── real_world_interfaces/         Sensor and Actuator abstractions
+│   └── synthetic/                 SyntheticState, SyntheticExternalState, sensor, actuator
+├── forecasting/                   Time, TimeSeriesData, TimeSeries, forecaster interface
+│   └── baseline_forecasters.py    LookupForecaster, ConstantForecaster
 ├── optimization/
-│   ├── milp/                Device models and MILP formulation
-│   └── mpc/                 MPC loop orchestration
-└── outputs/                 Saved plots
+│   ├── milp/                      Device models and MILP formulation
+│   └── mpc/                       MPC loop orchestration, MPCStep, MPCHistory
+└── outputs/                       Saved plots
 ```
 
 ## Dependencies
@@ -80,11 +98,11 @@ EnergyPilot/
 - `numpy`
 - `scipy` ≥ 1.9 — MILP solver (HiGHS backend via `scipy.optimize.milp`)
 - `matplotlib`
+- `sortedcontainers` — sorted list for `TimeSeriesData`
 
 ## Limitations & Next Steps
 
-- **Forecast model** — currently uses synthetic patterns; replace with trained models for production use
-- **Synthetic environment** — the scattered synthetic state objects are a candidate for consolidation into a unified environment class
-- **Stochastic optimisation** — optimising over multiple forecast scenarios simultaneously would yield more robust decisions
+- **Forecast model** — replace `LookupForecaster` with trained models or external APIs for production use
+- **Stochastic optimization** — optimizing over multiple forecast scenarios simultaneously would yield more robust decisions
 - **Schedulable appliances** — washing machines, dishwashers, etc. fit naturally as one-shot binary-scheduled loads
-- **Nonlinear COP** — COP is currently linearised; a nonlinear solver would handle the full temperature-dependent model
+- **Nonlinear COP** — COP is currently linearized; a nonlinear solver would handle the full temperature-dependent model

@@ -13,11 +13,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from real_world_interfaces import Sensor, Actuator
-from .opt_components import OptimizationComponent
+from interfaces import Sensor, Actuator
+from .milp.opt_components import OptimizationComponent
 
 if TYPE_CHECKING:
-    from optimization.milp.household import HouseholdResult
+    from .milp.household import HouseholdResult
 
 
 class PhysicalEntity:

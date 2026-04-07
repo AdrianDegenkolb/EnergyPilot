@@ -8,12 +8,13 @@ MPCHistory: ordered sequence of MPCStep records.
 """
 
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import datetime
 
 import numpy as np
 
-from optimization.milp.household import HouseholdResult, HouseholdOptimizationProblem
+from ..milp.household import HouseholdResult, HouseholdOptimizationProblem
 
 
 @dataclass

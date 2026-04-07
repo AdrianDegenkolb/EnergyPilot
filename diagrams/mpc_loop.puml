@@ -5,15 +5,21 @@ skinparam defaultFontSize 13
 
 start
 
-:Build TimeSeries\n(sensor + forecaster per signal);
+:Precompute signal trajectories\nas TimeSeriesData objects\n(price_buy, price_sell, load, gen, temp_out);
+
+:Build TimeSeries per signal\n(SyntheticExternalState sensor + forecaster);
 
 :Build OptimizationComponents\n(BatteryModel, EVModel, HeatPumpModel);
 
-:Build PhysicalEntities\n(sensor + model + actuator per device);
+:Build PhysicalEntities\n(SyntheticState sensor + model + SyntheticActuator);
 
 repeat
 
-    :Observe all TimeSeries\n— sensor.read() → append history\n— invalidate forecast cache;
+    :Capture current timestamp\nfrom Time singleton;
+
+    :Observe all TimeSeries\n— SyntheticExternalState.read() → get_value_at(t)\n— append to _history → invalidate forecast cache;
+
+    :Forecast all TimeSeries\n— resample _history at dt intervals\n— forecaster(history, T, dt) → cache;
 
     :Observe all PhysicalEntities\n— sensor.read() → model.set_initial_state(value);
 
@@ -22,17 +28,17 @@ repeat
     :Solve MILP (HiGHS via scipy.milp);
 
     if (feasible?) then (yes)
-        :For each PhysicalEntity:\ncommand = model.extract_command(result)\nactuator.execute(command)\n→ SyntheticState.step(command)\n→ advances SoC / temperature;
-        :Record MPCStep\n(step index + HouseholdResult);
+        :For each PhysicalEntity:\npower = extract_optimal_power_setpoint(result)\nnext_state = extract_expected_next_step_state(result)\nactuator.execute(power, next_state)\n→ SyntheticState.set(next_state);
+        :Record MPCStep\n(step + timestamp + HouseholdResult);
     else (no)
         :Log failure — skip step;
     endif
 
-    :t = t + 1;
+    :Advance time: Time.set(t + dt);
 
 repeat while (t < T_total)
 
-:plot_results(history, dt);
+:For each forecasting mode:\nplot_results(history, dt)\nplot_forecast_comparison(histories, dt);
 
 stop
 @enduml

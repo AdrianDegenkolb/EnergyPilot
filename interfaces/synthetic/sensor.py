@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from real_world_interfaces import Sensor
 from .state import SyntheticState, SyntheticExternalState
+from ..sensor import Sensor
 
 
 class SyntheticSensor(Sensor[float]):

@@ -4,14 +4,11 @@ from datetime import datetime, timedelta
 
 import numpy as np
 
-from forecasting import TimeSeries
-from forecasting.time import Time
-from forecasting.time_series_data import TimeSeriesData
-from optimization import MPC
-from optimization.milp import BatteryModel, EVModel, HeatPumpModel, PhysicalEntity
+from control import MPC, BatteryModel, EVModel, HeatPumpModel, PhysicalEntity
+from core import Time, TimeSeriesData
+from forecasting import TimeSeries, LookupForecaster, ConstantForecaster
+from interfaces.synthetic import SyntheticState, SyntheticExternalState
 from plot import plot_results, plot_forecast_comparison
-from real_world_interfaces.synthetic import SyntheticState, SyntheticExternalState
-from forecasting.baseline_forecasters import LookupForecaster, ConstantForecaster
 
 FORECASTING_MODES = ["lookup", "constant"]
 

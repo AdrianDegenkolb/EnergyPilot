@@ -11,10 +11,10 @@ These states have no actuator and no update_fn.
 """
 
 from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
-from forecasting.time_series_data import TimeSeriesData
-from forecasting.time import Time
+from core import TimeSeriesData, Time
 
 if TYPE_CHECKING:
     from .sensor import SyntheticSensor
