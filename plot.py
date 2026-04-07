@@ -1,5 +1,7 @@
 """Plotting logic for MPC simulation results."""
 
+from datetime import timedelta
+
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
@@ -16,7 +18,8 @@ C_BUY     = "#C2185B"
 C_SELL    = "#7B1FA2"
 C_TEMP_IN = "#E53935"
 C_MPC     = "#1565C0"
-C_NAIVE   = "#EF6C00"
+
+_COMPARISON_COLORS = ["#1565C0", "#EF6C00", "#388E3C", "#C2185B", "#7B1FA2", "#5D4037"]
 
 
 def _style_ax(ax: plt.Axes, ylabel: str, legend_loc: str = "best") -> None:
@@ -52,24 +55,20 @@ def _stacked_bars(
             neg_bottom += neg
 
 
-def _step_cost(s: MPCStep, dt: float) -> float:
-    return (s.result.p_buy[0] * s.result.price_buy[0]
-            - s.result.p_sell[0] * s.result.price_sell[0]) * dt
-
-
-def plot_results(history: MPCHistory, dt: float, path: str = "outputs/mpc_results.png", show=True) -> None:
-    steps = np.array([s.step for s in history.steps]) * dt
-    w     = 0.55 * dt
+def plot_results(history: MPCHistory, dt: timedelta, path: str = "outputs/mpc_results.png", show: bool = True) -> None:
+    dt_h  = dt.total_seconds() / 3600
+    steps = np.array([s.step for s in history.steps]) * dt_h
+    w     = 0.55 * dt_h
 
     heat_pump = next((c for c in history.steps[0].optimization_problem._components if isinstance(c, HeatPumpModel)), None)
-    temp_variable_name = heat_pump._temp_variable_name if heat_pump else None
-    power_setpoint_heat_pump = heat_pump._power_setpoint_variable_name if heat_pump else None
+    temp_variable_name        = heat_pump._temp_variable_name if heat_pump else None
+    power_setpoint_heat_pump  = heat_pump._power_setpoint_variable_name if heat_pump else None
     battery = next((c for c in history.steps[0].optimization_problem._components if isinstance(c, BatteryModel)), None)
     soc_battery_variable_name = battery._soc_variable_name if battery else None
-    power_setpoint_battery = battery._power_setpoint_variable_name if battery else None
+    power_setpoint_battery    = battery._power_setpoint_variable_name if battery else None
     ev = next((c for c in history.steps[0].optimization_problem._components if isinstance(c, EVModel)), None)
     soc_ev_variable_name = ev._soc_variable_name if ev else None
-    power_setpoint_ev = ev._power_setpoint_variable_name if ev else None
+    power_setpoint_ev    = ev._power_setpoint_variable_name if ev else None
 
     price_buy  = np.array([s.result.price_buy[0]  for s in history.steps])
     price_sell = np.array([s.result.price_sell[0] for s in history.steps])
@@ -77,15 +76,14 @@ def plot_results(history: MPCHistory, dt: float, path: str = "outputs/mpc_result
     p_sell     = np.array([s.result.p_sell[0]     for s in history.steps])
     load       = np.array([s.result.load[0]        for s in history.steps])
     gen        = np.array([s.result.gen[0]          for s in history.steps])
-    temp_in    = np.array([s.result.variables.get(temp_variable_name, np.zeros(2))[0] for s in history.steps])
+    temp_in    = np.array([s.result.variables.get(temp_variable_name,       np.zeros(2))[0] for s in history.steps])
     soc_bat    = np.array([s.result.variables.get(soc_battery_variable_name, np.zeros(2))[0] for s in history.steps])
-    soc_ev     = np.array([s.result.variables.get(soc_ev_variable_name, np.zeros(2))[0] for s in history.steps])
-    x_bat      = np.array([float(s.result.variables.get(power_setpoint_battery, np.zeros(1))[0]) for s in history.steps])
-    x_ev       = np.array([float(s.result.variables.get(power_setpoint_ev,  np.zeros(1))[0]) for s in history.steps])
+    soc_ev     = np.array([s.result.variables.get(soc_ev_variable_name,     np.zeros(2))[0] for s in history.steps])
+    x_bat      = np.array([float(s.result.variables.get(power_setpoint_battery,    np.zeros(1))[0]) for s in history.steps])
+    x_ev       = np.array([float(s.result.variables.get(power_setpoint_ev,         np.zeros(1))[0]) for s in history.steps])
     x_hp       = np.array([float(s.result.variables.get(power_setpoint_heat_pump,  np.zeros(1))[0]) for s in history.steps])
 
-    mpc_costs   = np.array([_step_cost(s, dt)       for s in history.steps])
-    cum_mpc     = np.cumsum(mpc_costs)
+    cum_cost = history.cumulative_cost()
 
     fig = plt.figure(figsize=(14, 16))
     fig.suptitle("Household Energy Scheduling — MPC", fontsize=13, fontweight="bold", y=0.99)
@@ -135,10 +133,10 @@ def plot_results(history: MPCHistory, dt: float, path: str = "outputs/mpc_result
     ax6.set_title("Heat Pump & Temperature", fontsize=9, fontweight="bold")
     _style_ax(ax6, "Temperature [°C]")
 
-    final_mpc   = cum_mpc[-1]
-    ax7.plot(steps, cum_mpc,   "o-",  color=C_MPC,   lw=2, ms=4,
-             label=f"MPC  —  final: {final_mpc:.2f} €")
-    ax7.set_title("Cumulative Cost: MPC", fontsize=9, fontweight="bold")
+    final_cost = cum_cost[-1]
+    ax7.plot(steps[:-1], cum_cost, "o-", color=C_MPC, lw=2, ms=4,
+             label=f"MPC  —  final: {final_cost:.2f} €")
+    ax7.set_title("Cumulative Cost", fontsize=9, fontweight="bold")
     _style_ax(ax7, "Cumulative cost [€]")
 
     for ax in [ax1, ax2, ax3, ax4, ax5, ax6, ax7]:
@@ -149,4 +147,60 @@ def plot_results(history: MPCHistory, dt: float, path: str = "outputs/mpc_result
         plt.show()
 
     print(f"\nPlot saved to {path}")
-    print(f"  MPC total cost:   {final_mpc:.4f} €")
+    print(f"  MPC total cost: {final_cost:.4f} €")
+
+
+def plot_forecast_comparison(
+    histories: dict[str, MPCHistory],
+    dt: timedelta,
+    path: str = "outputs/mpc_comparison.png",
+    show: bool = True,
+) -> None:
+    """
+    Plot cumulative costs for all forecasting modes on a single axis.
+
+    Shades the area between the cheapest and most expensive mode,
+    and annotates the final cost difference in the legend.
+    """
+    dt_h = dt.total_seconds() / 3600
+
+    curves: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for mode, history in histories.items():
+        steps    = np.array([s.step for s in history.steps[:-1]]) * dt_h
+        cum_cost = history.cumulative_cost()
+        curves[mode] = (steps, cum_cost)
+
+    final_costs = {mode: cum[-1] for mode, (_, cum) in curves.items()}
+    cheapest    = min(final_costs, key=final_costs.get)
+    most_expensive = max(final_costs, key=final_costs.get)
+    delta = final_costs[most_expensive] - final_costs[cheapest]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    fig.suptitle("Forecast Mode Comparison — Cumulative Cost", fontsize=13, fontweight="bold")
+
+    for (mode, (steps, cum)), color in zip(curves.items(), _COMPARISON_COLORS):
+        ax.plot(steps, cum, "o-", color=color, lw=2, ms=3,
+                label=f"{mode}  —  {final_costs[mode]:.2f} €")
+
+    # Shade between cheapest and most expensive
+    steps_ref = curves[cheapest][0]
+    ax.fill_between(
+        steps_ref,
+        curves[cheapest][1],
+        curves[most_expensive][1],
+        alpha=0.12,
+        color="gray",
+        label=f"Δ ({cheapest} vs {most_expensive}) = {delta:.2f} €",
+    )
+
+    ax.set_xlabel("Time [h]", fontsize=9)
+    _style_ax(ax, "Cumulative cost [€]", legend_loc="upper left")
+
+    plt.tight_layout()
+    plt.savefig(path, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+
+    print(f"\nComparison plot saved to {path}")
+    for mode, cost in sorted(final_costs.items(), key=lambda x: x[1]):
+        print(f"  {mode}: {cost:.4f} €")

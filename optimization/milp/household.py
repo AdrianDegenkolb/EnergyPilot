@@ -119,7 +119,7 @@ class HouseholdOptimizationProblem:
         lb[idx_sell.start: idx_sell.stop] = 0.0
 
         for component in self._components:
-            component.contribute(reg, constraints, objective, lb, ub, T, dt_in_hours)
+            component.contribute(reg, constraints, objective, lb, ub, T, dt)
 
         # Grid balance: p_buy - p_sell = sum(component_net_power) + load - gen
         for t in range(T):

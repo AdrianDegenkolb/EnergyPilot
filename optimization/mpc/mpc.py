@@ -118,6 +118,7 @@ class MPC:
 
     def _step(self, step: int, T_h: int) -> MPCStep | None:
         """Execute a single MPC step. Returns None if solve failed."""
+        timestamp = Time.get_instance().get()
 
         # 1. Observe and forecast all series
         for ts in self._extra_series + [self._price_buy, self._price_sell, self._load, self._gen]:
@@ -139,4 +140,4 @@ class MPC:
         for entity in self.entities:
             entity.act(result)
 
-        return MPCStep(step=step, optimization_problem=self.household, result=result)
+        return MPCStep(step=step, timestamp=timestamp, optimization_problem=self.household, result=result)

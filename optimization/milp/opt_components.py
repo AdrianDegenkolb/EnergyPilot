@@ -27,6 +27,7 @@ from __future__ import annotations
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Optional, TYPE_CHECKING
 
 import numpy as np
@@ -120,7 +121,7 @@ class OptimizationComponent(ABC):
         lb: np.ndarray,
         ub: np.ndarray,
         T: int,
-        dt: float,
+        dt: timedelta,
     ) -> None:
         """Add constraints, bounds, and objective terms."""
         ...
@@ -222,6 +223,7 @@ class BatteryModel(OptimizationComponent):
         if self.soc_init is None:
             raise ValueError("BatteryModel.contribute() called before soc_init was set.")
 
+        dt_in_hours = dt.seconds / 3600
         n = objective.size
 
         for t in range(T):
@@ -239,7 +241,7 @@ class BatteryModel(OptimizationComponent):
             row = np.zeros(n)
             row[self._soc[t + 1]] = 1.0
             row[self._soc[t]] = -1.0
-            row[self._power_setpoint[t]] = -dt * self.efficiency
+            row[self._power_setpoint[t]] = -dt_in_hours * self.efficiency
             constraints.add_eq(row, 0.0)
 
     def net_power(self, n: int, t: int) -> tuple[np.ndarray, float]:
@@ -306,6 +308,7 @@ class EVModel(OptimizationComponent):
         if self.soc_init is None:
             raise ValueError("EVModel.contribute() called before soc_init was set.")
 
+        dt_in_hours = dt.seconds / 3600
         n = objective.size
 
         for t in range(T):
@@ -323,7 +326,7 @@ class EVModel(OptimizationComponent):
             row = np.zeros(n)
             row[self._soc[t + 1]] = 1.0
             row[self._soc[t]] = -1.0
-            row[self._power_setpoint[t]] = -dt * self.efficiency
+            row[self._power_setpoint[t]] = -dt_in_hours * self.efficiency
             constraints.add_eq(row, 0.0)
 
         if self.target_soc is not None and self.target_timestep is not None:
@@ -413,6 +416,7 @@ class HeatPumpModel(OptimizationComponent):
         temp_out = self._temp_out_series.forecast(T, dt)
         cop = self._compute_cop(temp_out, T)
         n = objective.size
+        dt_in_hours = dt.seconds / 3600
 
         for t in range(T):
             lb[self._power_setpoint[t]] = 0.0
@@ -425,9 +429,9 @@ class HeatPumpModel(OptimizationComponent):
         for t in range(T):
             row = np.zeros(n)
             row[self._temp[t + 1]] = 1.0
-            row[self._temp[t]] = -(1.0 - self.lambda_ * dt / self.C_therm)
-            row[self._power_setpoint[t]] = -cop[t] * dt / self.C_therm
-            rhs = self.lambda_ * dt * temp_out[t] / self.C_therm
+            row[self._temp[t]] = -(1.0 - self.lambda_ * dt_in_hours / self.C_therm)
+            row[self._power_setpoint[t]] = -cop[t] * dt_in_hours / self.C_therm
+            rhs = self.lambda_ * dt_in_hours * temp_out[t] / self.C_therm
             constraints.add_eq(row, rhs)
 
             row = np.zeros(n)

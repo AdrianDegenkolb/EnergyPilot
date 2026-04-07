@@ -26,4 +26,4 @@ class SyntheticActuator(Actuator[float, float]):
         """
         Sets the internal state to the expected_next_state computed by the optimization process
         """
-        self._state.set(command)
+        self._state.set(expected_next_state)
