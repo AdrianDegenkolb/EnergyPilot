@@ -356,21 +356,58 @@ class EVModel(OptimizationComponent):
 
 class HeatPumpModel(OptimizationComponent):
     """
-    Heat pump with room temperature dynamics.
+    Heat pump with first-order room temperature dynamics (single-zone thermal model).
 
-    Decision variable x_hp^t in [0, max_power]: electrical input power [kW].
+    Decision variable:
+        x_hp^t ∈ [0, max_power]
+            Electrical input power of the heat pump at time step t [kW].
 
-    State: temp_in^t
-    Dynamics:
-        temp_in^{t+1} = temp_in^t * (1 - lambda*dt/C)
-                       + cop^t * x_hp^t * dt / C
-                       + lambda * dt * temp_out^t / C
+    State:
+        temp_in^t
+            Indoor air temperature at time step t [°C].
 
-    temp_out is read from a TimeSeries injected at construction — the only
-    component with a TimeSeries dependency, made explicit via the constructor.
+    Exogenous input:
+        temp_out^t
+            Outdoor temperature at time step t [°C], obtained from a TimeSeries
+            forecast (not optimized).
 
-    Command sent to actuator: x_hp^0 (first-step electrical input power [kW]).
-    The SyntheticActuator's update_fn must implement the same heat dynamics.
+    Parameters:
+        C_therm [kWh/K]
+            Effective thermal capacity of the building. Represents how much
+            energy is required to change the indoor temperature by 1 K.
+
+        lambda [kW/K]
+            Heat transfer coefficient between indoor and outdoor environment.
+            Higher values imply faster heat exchange (worse insulation).
+
+        dt [h]
+            Length of one time step in hours.
+
+        cop^t [-]
+            Coefficient of performance of the heat pump at time step t.
+            Computed exogenously as a function of temperatures and treated
+            as a known scalar (not a decision variable), ensuring linearity.
+
+    Dynamics (discrete-time energy balance):
+        temp_in^{t+1} = temp_in^t * (1 - lambda * dt / C_therm) + cop^t * x_hp^t * dt / C_therm + lambda * dt * temp_out^t / C_therm
+
+    Initial condition:
+        temp_in^0 is fixed to a given initial temperature.
+
+    Constraints:
+        temp_min^t ≤ temp_in^t ≤ temp_max^t
+            Comfort bounds on indoor temperature [°C].
+
+        0 ≤ x_hp^t ≤ max_power
+            Physical limits of the heat pump [kW].
+
+    Notes on modeling:
+        - The COP is precomputed (e.g. using forecast temperatures) and is
+          independent of optimization variables, so the model remains linear
+          and suitable for MILP.
+
+        - The building is modeled as a single thermal zone (lumped parameter
+          model), ignoring spatial temperature differences.
     """
 
     def __init__(
@@ -383,6 +420,18 @@ class HeatPumpModel(OptimizationComponent):
         lambda_: float,
         cop_eta: float = 0.4,
     ) -> None:
+        """
+        Construct a HeatPumpModel.
+
+        Args:
+            temp_min: minimum allowed indoor temperature at each timestep (comfort constraint) [°C]
+            temp_max: maximum allowed indoor temperature at each timestep (comfort constraint) [°C]
+            temp_out_series: a (forecasted) series of outdoor temperatures consumed by the model to compute COP and dynamics
+            max_power: the maximum electrical input power of the heat pump (physical constraint) [kW]
+            C_therm: the effective thermal capacity of the building (parameter of the thermal model) [kWh/K]
+            lambda_: the heat transfer coefficient between indoor and outdoor environment (parameter of the thermal model) [kW/K]
+            cop_eta: the efficiency factor for computing the COP (parameter of the COP model) [-]. Higher values imply a more efficient heat pump.
+        """
         super().__init__()
         self.temp_init: Optional[float] = None
         self.temp_min = temp_min
@@ -451,4 +500,3 @@ class HeatPumpModel(OptimizationComponent):
 
     def extract_expected_next_step_state(self, result: HouseholdResult) -> float:
         return float(result.variables[self._temp_variable_name][1])
-
