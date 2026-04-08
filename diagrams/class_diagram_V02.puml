@@ -1,0 +1,148 @@
+@startuml class_diagram
+title EnergyPilot V2 - Class Structure
+
+skinparam classAttributeIconSize 0
+skinparam classFontSize 13
+skinparam packageFontSize 14
+
+package "ControlledSystem" {
+
+    class Household {
+        +battery: Battery
+        +ev: ElectricVehicle
+        +heat_pump: HeatPump
+        
+    }
+
+    package "Entities" {
+    abstract class Entity {
+        +{abstract} register(reg, T)
+        +{abstract} contribute(reg, constraints, objective, T, dt)
+        +{abstract} net_power(reg, x, T): ndarray
+        +{abstract} bounds(T): tuple
+    }
+
+    class Battery {
+        +capacity: float
+        +soc_init: float
+        +charge_max: float
+        +discharge_max: float
+        +soc_min: float
+        +efficiency: float
+        --
+        x_bat^t ∈ [−discharge_max, charge_max]
+        soc_bat^t ∈ [soc_min, capacity]
+        soc^{t+1} = soc^t + x^t · dt
+    }
+
+    class ElectricVehicle {
+        +capacity: float
+        +soc_init: float
+        +charge_max: float
+        +target_soc: float
+        +target_timestep: int
+        +efficiency: float
+        --
+        x_ev^t ∈ [0, charge_max]
+        soc_ev^t ∈ [0, capacity]
+        soc^{t+1} = soc^t + x^t · dt
+        soc^{T_target} ≥ target_soc
+    }
+
+    class HeatPump {
+        +temp_init: float
+        +temp_min: ndarray
+        +temp_max: ndarray
+        +temp_out: ndarray
+        +max_power: float
+        +C_therm: float
+        +lambda_: float
+        +cop_eta: float
+        --
+        x_hp^t ∈ [0, max_power]
+        temp^{t+1} = temp^t + cop^t·x^t·dt/C
+                   − λ·(temp^t − T_out^t)·dt
+        temp^t ∈ [temp_min^t, temp_max^t]
+    }
+
+    Entity <|-- Battery
+    Entity <|-- ElectricVehicle
+    Entity <|-- HeatPump
+    
+    }
+
+
+    Household *-- Battery
+    Household *-- ElectricVehicle
+    Household *-- HeatPump
+}
+
+
+package "Data" {
+    
+    class SystemState {
+
+    }
+    class Measurements {
+
+    }
+
+    class Forecast {
+
+    }
+
+    class ControlAction {
+
+    }
+}
+
+package "Services" {
+
+    abstract class Controller {
+
+    }
+
+    class MPCController {
+
+    }
+
+    class OptimizationModelBuilder {
+
+    }
+
+    abstract class ForecastProvider {
+
+    }
+
+    class DummyForecaster {
+
+    }
+
+    abstract class Actuator {
+
+    }
+
+    class SimulatedActuator {
+
+    }
+
+    class RealtimeActuator {
+        
+    }
+
+    ForecastProvider <|-- DummyForecaster
+    Controller <|-- MPCController
+    Actuator <|-- SimulatedActuator
+
+}
+
+package "IO" {
+
+    class Dashboard {
+
+    }
+}
+
+
+
+@enduml
