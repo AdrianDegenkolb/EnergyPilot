@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -30,6 +31,11 @@ class SimulationConfig:
     @property
     def t_horizon(self) -> int:
         return int(timedelta(hours=self.horizon_hours) / self.dt)
+
+
+@dataclass
+class ForecastingConfig:
+    modes: list[str]
 
 
 @dataclass
@@ -75,46 +81,22 @@ class SyntheticSignalsConfig:
 
 
 @dataclass
-class ForecastingConfig:
-    modes: list[str]
+class EntityConfig:
+    type: str
+    id: str
+    role: str | None
+    enabled: bool
+    initial_state: dict[str, Any]
+    parameters: dict[str, Any]
 
 
 @dataclass
-class BatteryConfig:
-    initial_soc: float
-    capacity: float
-    charge_max: float
-    discharge_max: float
-    soc_min: float
-    efficiency: float
-
-
-@dataclass
-class EVConfig:
-    initial_soc: float
-    capacity: float
-    charge_max: float
-    discharge_max: float
-    target_soc: float
-    efficiency: float
-
-
-@dataclass
-class HeatPumpConfig:
-    initial_temp: float
-    temp_min: float
-    temp_max: float
-    max_power: float
-    c_therm: float
-    lambda_: float
-    cop_eta: float
-
-
-@dataclass
-class EntitiesConfig:
-    battery: BatteryConfig
-    ev: EVConfig
-    heat_pump: HeatPumpConfig
+class SystemConfig:
+    id: str
+    type: str
+    enabled: bool
+    synthetic_signals: SyntheticSignalsConfig
+    entities: list[EntityConfig]
 
 
 @dataclass
@@ -128,9 +110,45 @@ class OutputsConfig:
 class AppConfig:
     simulation: SimulationConfig
     forecasting: ForecastingConfig
-    synthetic_signals: SyntheticSignalsConfig
-    entities: EntitiesConfig
+    systems: list[SystemConfig]
     outputs: OutputsConfig
+
+
+def _load_synthetic_signals(raw: dict[str, Any]) -> SyntheticSignalsConfig:
+    return SyntheticSignalsConfig(
+        price_buy=PriceBuySignalConfig(**raw["price_buy"]),
+        price_sell=PriceSellSignalConfig(**raw["price_sell"]),
+        load=LoadSignalConfig(**raw["load"]),
+        gen=GenSignalConfig(**raw["gen"]),
+        temp_out=TempOutSignalConfig(**raw["temp_out"]),
+    )
+
+
+def _load_entities(raw_entities: list[dict[str, Any]]) -> list[EntityConfig]:
+    return [
+        EntityConfig(
+            type=entity["type"],
+            id=entity["id"],
+            role=entity.get("role"),
+            enabled=entity.get("enabled"),
+            initial_state=entity.get("initial_state", {}),
+            parameters=entity.get("parameters", {}),
+        )
+        for entity in raw_entities
+    ]
+
+
+def _load_systems(raw_systems: list[dict[str, Any]]) -> list[SystemConfig]:
+    return [
+        SystemConfig(
+            id=system["id"],
+            type=system["type"],
+            enabled=system.get("enabled", True),
+            synthetic_signals=_load_synthetic_signals(system["synthetic_signals"]),
+            entities=_load_entities(system.get("entities", [])),
+        )
+        for system in raw_systems
+    ]
 
 
 def load_config(path: str | Path) -> AppConfig:
@@ -148,17 +166,6 @@ def load_config(path: str | Path) -> AppConfig:
         forecasting=ForecastingConfig(
             modes=list(raw["forecasting"]["modes"]),
         ),
-        synthetic_signals=SyntheticSignalsConfig(
-            price_buy=PriceBuySignalConfig(**raw["synthetic_signals"]["price_buy"]),
-            price_sell=PriceSellSignalConfig(**raw["synthetic_signals"]["price_sell"]),
-            load=LoadSignalConfig(**raw["synthetic_signals"]["load"]),
-            gen=GenSignalConfig(**raw["synthetic_signals"]["gen"]),
-            temp_out=TempOutSignalConfig(**raw["synthetic_signals"]["temp_out"]),
-        ),
-        entities=EntitiesConfig(
-            battery=BatteryConfig(**raw["entities"]["battery"]),
-            ev=EVConfig(**raw["entities"]["ev"]),
-            heat_pump=HeatPumpConfig(**raw["entities"]["heat_pump"]),
-        ),
+        systems=_load_systems(raw["systems"]),
         outputs=OutputsConfig(**raw["outputs"]),
     )

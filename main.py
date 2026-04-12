@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from core.config import AppConfig, load_config
+from core.config import AppConfig, SystemConfig, EntityConfig, load_config
 from control import MPC, BatteryModel, EVModel, HeatPumpModel, PhysicalEntity
 from core import Time, TimeSeriesData
 from forecasting import TimeSeries, LookupForecaster, ConstantForecaster
@@ -20,13 +20,13 @@ def _build_signals(
     T: int,
     dt: timedelta,
     rng: np.random.Generator,
-    config: AppConfig,
+    system_cfg: SystemConfig,
 ) -> dict[str, TimeSeriesData]:
     """Precompute passive signal trajectories as TimeSeriesData objects."""
     signals = {k: TimeSeriesData() for k in ("price_buy", "price_sell", "load", "gen", "temp_out")}
     T_day = int(timedelta(hours=24) / dt)
 
-    sig_cfg = config.synthetic_signals
+    sig_cfg = system_cfg.synthetic_signals
 
     for step in range(T):
         t = t0 + dt * step
@@ -41,10 +41,7 @@ def _build_signals(
             ),
         )
 
-        signals["price_sell"].add_point(
-            t,
-            float(sig_cfg.price_sell.constant),
-        )
+        signals["price_sell"].add_point(t, float(sig_cfg.price_sell.constant))
 
         signals["load"].add_point(
             t,
@@ -90,59 +87,98 @@ def _make_series(mode: str, signals: dict[str, TimeSeriesData]) -> dict[str, Tim
     return {k: _ts(k) for k in ("price_buy", "price_sell", "load", "gen", "temp_out")}
 
 
+def _build_physical_entity(
+    entity_cfg: EntityConfig,
+    series: dict[str, TimeSeries],
+    t_horizon: int,
+    t_total: int,
+) -> PhysicalEntity | None:
+    if not entity_cfg.enabled:
+        return None
+
+    p = entity_cfg.parameters
+    s = entity_cfg.initial_state
+
+    if entity_cfg.type == "battery":
+        state = SyntheticState(s["soc"])
+        sensor, actuator = state.make_sensor_actuator()
+        model = BatteryModel(
+            capacity=p["capacity"],
+            charge_max=p["charge_max"],
+            discharge_max=p["discharge_max"],
+            soc_min=p["soc_min"],
+            efficiency=p["efficiency"],
+        )
+        return PhysicalEntity(sensor, model, actuator)
+
+    if entity_cfg.type == "ev":
+        state = SyntheticState(s["soc"])
+        sensor, actuator = state.make_sensor_actuator()
+        model = EVModel(
+            capacity=p["capacity"],
+            charge_max=p["charge_max"],
+            discharge_max=p["discharge_max"],
+            target_soc=p["target_soc"],
+            target_timestep=t_total + 1,
+            efficiency=p["efficiency"],
+        )
+        return PhysicalEntity(sensor, model, actuator)
+
+    if entity_cfg.type == "heat_pump":
+        state = SyntheticState(s["temperature"])
+        sensor, actuator = state.make_sensor_actuator()
+        model = HeatPumpModel(
+            temp_min=np.full(t_horizon, p["temp_min"]),
+            temp_max=np.full(t_horizon, p["temp_max"]),
+            temp_out_series=series["temp_out"],
+            max_power=p["max_power"],
+            C_therm=p["c_therm"],
+            lambda_=p["lambda_"],
+            cop_eta=p["cop_eta"],
+        )
+        return PhysicalEntity(sensor, model, actuator)
+
+    raise ValueError(f"Unknown entity type: {entity_cfg.type}")
+
+
+def _build_entities(
+    system_cfg: SystemConfig,
+    series: dict[str, TimeSeries],
+    t_horizon: int,
+    t_total: int,
+) -> list[PhysicalEntity]:
+    entities: list[PhysicalEntity] = []
+
+    for entity_cfg in system_cfg.entities:
+        entity = _build_physical_entity(
+            entity_cfg=entity_cfg,
+            series=series,
+            t_horizon=t_horizon,
+            t_total=t_total,
+        )
+        if entity is not None:
+            entities.append(entity)
+
+    return entities
+
+
 def _run_mode(
     mode: str,
     signals: dict[str, TimeSeriesData],
     config: AppConfig,
+    system_cfg: SystemConfig,
 ) -> "MPCHistory":
     sim_cfg = config.simulation
-    entity_cfg = config.entities
-    hp_cfg = entity_cfg.heat_pump
 
     Time.get_instance().set(sim_cfg.t0)
 
     series = _make_series(mode, signals)
-
-    bat_state = SyntheticState(entity_cfg.battery.initial_soc)
-    ev_state = SyntheticState(entity_cfg.ev.initial_soc)
-    hp_state = SyntheticState(hp_cfg.initial_temp)
-
-    bat_model = BatteryModel(
-        capacity=entity_cfg.battery.capacity,
-        charge_max=entity_cfg.battery.charge_max,
-        discharge_max=entity_cfg.battery.discharge_max,
-        soc_min=entity_cfg.battery.soc_min,
-        efficiency=entity_cfg.battery.efficiency,
+    entities = _build_entities(
+        system_cfg=system_cfg,
+        series=series,
+        t_horizon=sim_cfg.t_horizon,
+        t_total=sim_cfg.t_total,
     )
-
-    ev_model = EVModel(
-        capacity=entity_cfg.ev.capacity,
-        charge_max=entity_cfg.ev.charge_max,
-        discharge_max=entity_cfg.ev.discharge_max,
-        target_soc=entity_cfg.ev.target_soc,
-        target_timestep=sim_cfg.t_total + 1,
-        efficiency=entity_cfg.ev.efficiency,
-    )
-
-    hp_model = HeatPumpModel(
-        temp_min=np.full(sim_cfg.t_horizon, hp_cfg.temp_min),
-        temp_max=np.full(sim_cfg.t_horizon, hp_cfg.temp_max),
-        temp_out_series=series["temp_out"],
-        max_power=hp_cfg.max_power,
-        C_therm=hp_cfg.c_therm,
-        lambda_=hp_cfg.lambda_,
-        cop_eta=hp_cfg.cop_eta,
-    )
-
-    bat_sensor, bat_actuator = bat_state.make_sensor_actuator()
-    ev_sensor, ev_actuator = ev_state.make_sensor_actuator()
-    hp_sensor, hp_actuator = hp_state.make_sensor_actuator()
-
-    entities = [
-        PhysicalEntity(bat_sensor, bat_model, bat_actuator),
-        PhysicalEntity(ev_sensor, ev_model, ev_actuator),
-        PhysicalEntity(hp_sensor, hp_model, hp_actuator),
-    ]
 
     mpc = MPC(
         entities=entities,
@@ -156,7 +192,7 @@ def _run_mode(
     )
 
     print(f"\n{'=' * 65}")
-    print(f"  Forecasting mode: {mode}")
+    print(f"  System: {system_cfg.id} | Forecasting mode: {mode}")
     print(f"{'=' * 65}")
     return mpc.run(sim_cfg.t_total, fast_forward=True)
 
@@ -167,31 +203,39 @@ def main() -> None:
     output_dir = Path(config.outputs.directory)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    enabled_systems = [system for system in config.systems if system.enabled]
+    if not enabled_systems:
+        raise ValueError("No enabled systems found in config.")
+
+    system_cfg = enabled_systems[0]
+
     rng = np.random.default_rng(config.simulation.seed)
     signals = _build_signals(
         t0=config.simulation.t0,
         T=config.simulation.t_total + config.simulation.t_horizon,
         dt=config.simulation.dt,
         rng=rng,
-        config=config,
+        system_cfg=system_cfg,
     )
 
     histories: dict[str, "MPCHistory"] = {}
+
+    
     for mode in config.forecasting.modes:
-        history = _run_mode(mode, signals, config)
+        history = _run_mode(mode, signals, config, system_cfg)
         histories[mode] = history
 
         plot_results(
             history,
             dt=config.simulation.dt,
-            path=str(output_dir / f"mpc_results_{mode}.png"),
+            path=str(output_dir / f"{system_cfg.id}_mpc_results_{mode}.png"),
             show=config.outputs.show_individual_plots,
         )
 
     plot_forecast_comparison(
         histories,
         dt=config.simulation.dt,
-        path=str(output_dir / "mpc_comparison.png"),
+        path=str(output_dir / f"{system_cfg.id}_mpc_comparison.png"),
         show=config.outputs.show_comparison_plot,
     )
 
