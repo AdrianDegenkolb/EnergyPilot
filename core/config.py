@@ -110,7 +110,7 @@ class OutputsConfig:
 class AppConfig:
     simulation: SimulationConfig
     forecasting: ForecastingConfig
-    systems: list[SystemConfig]
+    energy_world: list[SystemConfig]
     outputs: OutputsConfig
 
 
@@ -138,7 +138,7 @@ def _load_entities(raw_entities: list[dict[str, Any]]) -> list[EntityConfig]:
     ]
 
 
-def _load_systems(raw_systems: list[dict[str, Any]]) -> list[SystemConfig]:
+def _load_systems(raw_energy_world: list[dict[str, Any]]) -> list[SystemConfig]:
     return [
         SystemConfig(
             id=system["id"],
@@ -147,7 +147,7 @@ def _load_systems(raw_systems: list[dict[str, Any]]) -> list[SystemConfig]:
             synthetic_signals=_load_synthetic_signals(system["synthetic_signals"]),
             entities=_load_entities(system.get("entities", [])),
         )
-        for system in raw_systems
+        for system in raw_energy_world
     ]
 
 
@@ -166,6 +166,6 @@ def load_config(path: str | Path) -> AppConfig:
         forecasting=ForecastingConfig(
             modes=list(raw["forecasting"]["modes"]),
         ),
-        systems=_load_systems(raw["systems"]),
+        energy_world=_load_systems(raw["energy_world"]),
         outputs=OutputsConfig(**raw["outputs"]),
     )

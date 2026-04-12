@@ -203,7 +203,7 @@ def main() -> None:
     output_dir = Path(config.outputs.directory)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    enabled_systems = [system for system in config.systems if system.enabled]
+    enabled_systems = [system for system in config.energy_world if system.enabled]
     if not enabled_systems:
         raise ValueError("No enabled systems found in config.")
 
@@ -220,7 +220,7 @@ def main() -> None:
 
     histories: dict[str, "MPCHistory"] = {}
 
-    
+
     for mode in config.forecasting.modes:
         history = _run_mode(mode, signals, config, system_cfg)
         histories[mode] = history
