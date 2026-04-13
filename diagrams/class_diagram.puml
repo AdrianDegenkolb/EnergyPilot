@@ -8,7 +8,7 @@ skinparam packageBackgroundColor #FAFAFA
 skinparam packageBorderColor #AAAAAA
 
 ' ─────────────────────────────────────────────
-package "real_world_interfaces" {
+package "interfaces" {
     abstract class Sensor<T> {
         +{abstract} read(): T
     }
@@ -19,7 +19,25 @@ package "real_world_interfaces" {
 }
 
 ' ─────────────────────────────────────────────
-package "real_world_interfaces.synthetic" {
+package "core" {
+    class Time <<singleton>> {
+        -_synthetic_current_time: datetime | None
+        +get(): datetime
+        +set(t: datetime)
+        +{static} get_instance(): Time
+    }
+
+    class TimeSeriesData {
+        -_points: SortedList
+        +add_point(timestamp, value)
+        +get_value_at(timestamp): float
+        +trim_oldest(max_size)
+        +points: list
+    }
+}
+
+' ─────────────────────────────────────────────
+package "interfaces.synthetic" {
     class SyntheticState {
         -_value: float
         +read(): float
@@ -35,10 +53,12 @@ package "real_world_interfaces.synthetic" {
     }
 
     class SyntheticSensor {
+        -_state: SyntheticState | SyntheticExternalState
         +read(): float
     }
 
     class SyntheticActuator {
+        -_state: SyntheticState
         +execute(command: float, expected_next_state: float)
     }
 
@@ -50,33 +70,22 @@ package "real_world_interfaces.synthetic" {
     SyntheticActuator --> SyntheticState : sets
     SyntheticExternalState ..> SyntheticSensor : creates
     SyntheticExternalState --> TimeSeriesData : reads
+    SyntheticExternalState --> Time : reads current time
 }
 
 ' ─────────────────────────────────────────────
 package "forecasting" {
-    class Time <<singleton>> {
-        +get(): datetime
-        +set(t: datetime)
-        +{static} get_instance(): Time
-    }
-
     abstract class SeriesForecaster {
         +{abstract} forecast(history, T, dt: timedelta): ndarray
         #_pin(mean, current): ndarray
-    }
-
-    class TimeSeriesData {
-        -_points: SortedList
-        +add_point(timestamp, value)
-        +get_value_at(timestamp): float
-        +trim_oldest(max_size)
-        +points: list
     }
 
     class TimeSeries {
         -_sensor: Sensor[float]
         -_forecaster: SeriesForecaster
         -_history: TimeSeriesData
+        -_cached_forecast: list
+        -_dirty: bool
         -_max_history: int
         +observe(): float
         +add_measurement(timestamp, value)
@@ -98,6 +107,7 @@ package "forecasting" {
     TimeSeries --> Sensor
     TimeSeries --> SeriesForecaster
     TimeSeries *-- TimeSeriesData : _history
+    TimeSeries --> Time
     LookupForecaster --|> SeriesForecaster
     ConstantForecaster --|> SeriesForecaster
     LookupForecaster --> TimeSeriesData
@@ -105,11 +115,26 @@ package "forecasting" {
 }
 
 ' ─────────────────────────────────────────────
-package "optimization.milp" {
+package "control.milp" {
+    class VariableRegistry {
+        -_blocks: dict
+        -_n: int
+        +register(name, count): range
+        +n_vars: int
+    }
+
+    class Constraints {
+        +rows: list
+        +lo: list
+        +hi: list
+        +add_eq(row, val)
+        +add_ineq(row, lo, hi)
+    }
+
     abstract class OptimizationComponent {
         +id: UUID
         +{abstract} register(reg, T)
-        +{abstract} contribute(reg, constraints, objective, lb, ub, T, dt: timedelta)
+        +{abstract} contribute(reg, constraints, objective, lb, ub, T, dt)
         +{abstract} net_power(n, t): tuple
         +{abstract} set_initial_state(value: float)
         +{abstract} extract_optimal_power_setpoint(result): float
@@ -139,14 +164,6 @@ package "optimization.milp" {
         -_temp_out_series: TimeSeries
     }
 
-    class PhysicalEntity {
-        +sensor: Sensor[float]
-        +model: OptimizationComponent
-        +actuator: Actuator
-        +observe(): float
-        +act(result): float
-    }
-
     class HouseholdOptimizationProblem {
         -_components: list[OptimizationComponent]
         -_price_buy, _price_sell: TimeSeries
@@ -167,17 +184,31 @@ package "optimization.milp" {
     BatteryModel --|> OptimizationComponent
     EVModel --|> OptimizationComponent
     HeatPumpModel --|> OptimizationComponent
-    HeatPumpModel --> TimeSeries : temp_out_series
-    PhysicalEntity --> Sensor
-    PhysicalEntity --> OptimizationComponent
-    PhysicalEntity --> Actuator
+    HeatPumpModel --> TimeSeries : _temp_out_series
     HouseholdOptimizationProblem o-- OptimizationComponent
     HouseholdOptimizationProblem --> TimeSeries
+    HouseholdOptimizationProblem --> VariableRegistry
+    HouseholdOptimizationProblem --> Constraints
     HouseholdOptimizationProblem ..> HouseholdResult : returns
 }
 
 ' ─────────────────────────────────────────────
-package "optimization.mpc" {
+package "control" {
+    class PhysicalEntity {
+        +sensor: Sensor[float]
+        +model: OptimizationComponent
+        +actuator: Actuator
+        +observe(): float
+        +act(result): float
+    }
+
+    PhysicalEntity --> Sensor
+    PhysicalEntity --> OptimizationComponent
+    PhysicalEntity --> Actuator
+}
+
+' ─────────────────────────────────────────────
+package "control.mpc" {
     class MPC {
         +entities: list[PhysicalEntity]
         +household: HouseholdOptimizationProblem
@@ -186,7 +217,7 @@ package "optimization.mpc" {
         -_extra_series: list[TimeSeries]
         +T_horizon: int
         +dt: timedelta
-        +run(T_total, fast_forward): MPCHistory
+        +run(T_total, fast_forward: bool): MPCHistory
         #_step(step, T_h): MPCStep | None
     }
 
@@ -210,6 +241,7 @@ package "optimization.mpc" {
     MPC ..> MPCHistory : returns
     MPCHistory o-- MPCStep
     MPCStep --> HouseholdResult
+    MPCStep --> HouseholdOptimizationProblem
 }
 
 @enduml
