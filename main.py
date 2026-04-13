@@ -1,10 +1,12 @@
 """Entry point for the household energy scheduling POC."""
 
+import threading
 from datetime import datetime, timedelta
 
 import numpy as np
 
-from control import MPC, BatteryModel, EVModel, HeatPumpModel, PhysicalEntity
+from control import MPC, BatteryModel, EVModel, HeatPumpModel, PhysicalEntity, MPCHistory
+from dashboard.dashboard import LiveStore, create_dashboard
 from core import Time, TimeSeriesData
 from forecasting import TimeSeries, LookupForecaster, ConstantForecaster
 from interfaces.synthetic import SyntheticState, SyntheticExternalState
@@ -51,7 +53,8 @@ def _run_mode(
     dt: timedelta,
     T_total: int,
     T_horizon: int,
-) -> "MPCHistory":
+    on_step=None,
+) -> MPCHistory:
     Time.get_instance().set(t0)
 
     series = _make_series(mode, signals)
@@ -66,7 +69,7 @@ def _run_mode(
         temp_min=np.full(T_horizon, 20.0),
         temp_max=np.full(T_horizon, 23.0),
         temp_out_series=series["temp_out"],
-        max_power=3.0, C_therm=5.0, lambda_=0.25, cop_eta=0.4,
+        max_power=3.0, C_therm=10.0, lambda_=0.25, cop_eta=0.4,
     )
 
     bat_sensor, bat_actuator = bat_state.make_sensor_actuator()
@@ -93,7 +96,7 @@ def _run_mode(
     print(f"\n{'='*65}")
     print(f"  Forecasting mode: {mode}")
     print(f"{'='*65}")
-    return mpc.run(T_total, fast_forward=True)
+    return mpc.run(T_total, fast_forward=True, on_step=on_step)
 
 
 def main() -> None:
@@ -105,13 +108,27 @@ def main() -> None:
     rng     = np.random.default_rng(0)
     signals = _build_signals(t0, T_total + T_horizon, dt, rng)
 
-    histories: dict[str, "MPCHistory"] = {}
-    for mode in FORECASTING_MODES:
-        history = _run_mode(mode, signals, t0, dt, T_total, T_horizon)
-        histories[mode] = history
-        plot_results(history, dt=dt, path=f"outputs/mpc_results_{mode}.png", show=False)
+    live_store = LiveStore(FORECASTING_MODES)
 
-    plot_forecast_comparison(histories, dt=dt, path="outputs/mpc_comparison.png", show=True)
+    def _run_simulation() -> None:
+        histories: dict[str, MPCHistory] = {}
+        for mode in FORECASTING_MODES:
+            live_store.set_active_mode(mode)
+            history = _run_mode(
+                mode, signals, t0, dt, T_total, T_horizon,
+                on_step=lambda step, m=mode: live_store.add_step(m, step),
+            )
+            histories[mode] = history
+            plot_results(history, dt=dt, path=f"outputs/mpc_results_{mode}.png", show=False)
+
+        plot_forecast_comparison(histories, dt=dt, path="outputs/mpc_comparison.png", show=False)
+        live_store.mark_done()
+
+    sim_thread = threading.Thread(target=_run_simulation, daemon=True)
+    sim_thread.start()
+
+    print("\nLaunching dashboard at http://localhost:8050  (simulation running in background)")
+    create_dashboard(live_store, dt, FORECASTING_MODES, T_total).run(debug=False, port=8050)
 
 
 if __name__ == "__main__":

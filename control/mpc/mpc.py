@@ -75,7 +75,12 @@ class MPC:
             gen=gen,
         )
 
-    def run(self, T_total: int, fast_forward: bool) -> MPCHistory:
+    def run(
+        self,
+        T_total: int,
+        fast_forward: bool,
+        on_step=None,
+    ) -> MPCHistory:
         """
         Run the MPC loop for T_total steps.
 
@@ -83,6 +88,8 @@ class MPC:
             T_total: Number of MPC steps to execute.
             fast_forward: If false, wait for self.dt between steps. If false assume a simulation setup and fast forward
             time using Time.set(...)
+            on_step: Optional callable(MPCStep) invoked after each successful step,
+                     e.g. to stream results to a live dashboard.
 
         Returns:
             MPCHistory containing all completed steps.
@@ -98,6 +105,8 @@ class MPC:
             if mpc_step is None:
                 continue
             history.append(mpc_step)
+            if on_step is not None:
+                on_step(mpc_step)
 
             if fast_forward:
                 now = Time.get_instance().get()
