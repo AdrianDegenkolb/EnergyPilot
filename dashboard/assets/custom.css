@@ -1,0 +1,6 @@
+/* Hide the numeric value input that appears to the right of Dash sliders */
+.rc-slider-with-marks ~ input,
+.rc-slider ~ input,
+.slider-container input[type=number] {
+    display: none !important;
+}
