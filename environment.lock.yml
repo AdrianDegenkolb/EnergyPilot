@@ -92,7 +92,7 @@ dependencies:
   - numpy=2.4.3
   - openjpeg=2.5.4
   - openldap=2.6.10
-  - openssl=3.6.1
+  - openssl=3.6.2
   - packaging=26.0
   - pcre2=10.47
   - pillow=12.2.0
@@ -104,6 +104,7 @@ dependencies:
   - python=3.11.15
   - python-dateutil=2.9.0.post0
   - python_abi=3.11
+  - pyyaml=6.0.3
   - qhull=2020.2
   - qt6-main=6.11.0
   - readline=8.3
@@ -139,6 +140,7 @@ dependencies:
   - xorg-libxrender=0.9.12
   - xorg-libxtst=1.2.5
   - xorg-libxxf86vm=1.1.7
+  - yaml=0.2.5
   - zlib-ng=2.3.3
   - zstd=1.5.7
   - pip:

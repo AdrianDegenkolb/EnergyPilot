@@ -1,0 +1,79 @@
+simulation:
+  start_time: "2024-01-01T00:00:00"
+  dt_minutes: 15
+  duration_hours: 24
+  horizon_hours: 12
+  seed: 0
+
+forecasting:
+  modes:
+    - lookup
+    - constant
+
+outputs:
+  directory: "outputs"
+  show_individual_plots: false
+  show_comparison_plot: true
+
+energy_world:
+  - id: "unique"
+    type: "residential"
+
+    synthetic_signals:
+      price_buy:
+        base: 0.28
+        amplitude: 0.08
+        noise_std: 0.01
+
+      price_sell:
+        constant: 0.08
+
+      load:
+        base: 0.6
+        amplitude: 0.25
+        noise_std: 0.05
+
+      gen:
+        peak: 1.5
+        width: 0.18
+        noise_std: 0.1
+
+      temp_out:
+        base: 4.0
+        amplitude: 4.0
+        noise_std: 0.3
+
+    entities:
+      - type: "battery"
+        parameters:
+          capacity: 10.0
+          charge_max: 3.0
+          discharge_max: 3.0
+          soc_min: 1.0
+          efficiency: 0.95
+          wearing_cost_per_kwh: 0.01
+        initial_state:
+          soc: 4.0
+
+      - type: "ev"
+        parameters:
+          capacity: 60.0
+          charge_max: 11.0
+          discharge_max: 11.0
+          target_soc: 50.0
+          efficiency: 0.95
+          wearing_cost_per_kwh: 0.01
+        initial_state:
+          soc: 15.0
+
+      - type: "heat_pump"
+        parameters:
+          temp_min: 20.0
+          temp_max: 23.0
+          max_power: 3.0
+          c_therm: 5.0
+          lambda_: 0.25
+          cop_eta: 0.4
+          wearing_cost_per_kwh: 0.01
+        initial_state:
+          temperature: 21.5

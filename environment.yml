@@ -10,3 +10,4 @@ dependencies:
   - sortedcontainers>=2.4.0
   - dash>=2.16
   - plotly
+  - yaml

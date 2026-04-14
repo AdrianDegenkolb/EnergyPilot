@@ -1,0 +1,61 @@
+@startuml
+
+
+scale 1.5
+skinparam nodesep 60
+skinparam ranksep 60
+
+package "ControlledSystem" {
+    [Household]
+
+    package "Entities" {
+        [Battery]
+        [ElectricVehicle]
+        [HeatPump]
+    }
+}
+
+package "DataObjects" {
+    (SystemState)
+    (ExternalMeasurements)
+    (ControlAction)
+    (Forecast)
+}
+
+package "Services" {
+    [MPCController]
+    [OptimizationModelBuilder]
+    [Forecaster]
+    [SimulatedActuator]
+}
+
+package "IO" {
+    [Dashboard]
+}
+
+[Household] --> (SystemState)
+[Household] --> (ExternalMeasurements)
+
+[Household] -- [Battery]
+[Household] -- [ElectricVehicle]
+[Household] -- [HeatPump]
+
+[Forecaster] <-- (SystemState)
+[Forecaster] <-- (ExternalMeasurements)
+[Forecaster] --> (Forecast)
+
+[MPCController] <-- (SystemState)
+[MPCController] <-- (ExternalMeasurements)
+[MPCController] <-- (Forecast)
+[MPCController] -- [OptimizationModelBuilder]
+[MPCController] --> (ControlAction)
+
+[SimulatedActuator] <-- (ControlAction)
+[SimulatedActuator] --> [Household] : apply(ControlAction)
+
+(SystemState) --> [Dashboard]
+(Forecast) --> [Dashboard]
+(ExternalMeasurements) --> [Dashboard]
+(ControlAction) --> [Dashboard]
+
+@enduml

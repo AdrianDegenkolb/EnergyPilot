@@ -145,6 +145,8 @@ def plot_results(history: MPCHistory, dt: timedelta, path: str = "outputs/mpc_re
     if show:
         plt.show()
 
+    plt.close(fig)
+
     print(f"\nPlot saved to {path}")
     print(f"  MPC total cost: {final_cost:.4f} €")
 
@@ -199,6 +201,8 @@ def plot_forecast_comparison(
     plt.savefig(path, dpi=150, bbox_inches="tight")
     if show:
         plt.show()
+
+    plt.close(fig)
 
     print(f"\nComparison plot saved to {path}")
     for mode, cost in sorted(final_costs.items(), key=lambda x: x[1]):
