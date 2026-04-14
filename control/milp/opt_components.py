@@ -201,6 +201,7 @@ class BatteryModel(OptimizationComponent):
         discharge_max: float,
         soc_min: float = 0.0,
         efficiency: float = 1.0,
+        wearing_cost_per_kwh: float = 0.0,
     ) -> None:
         super().__init__()
         self.capacity = capacity
@@ -209,15 +210,19 @@ class BatteryModel(OptimizationComponent):
         self.discharge_max = discharge_max
         self.soc_min = soc_min
         self.efficiency = efficiency
+        self.wearing_cost_per_kwh = wearing_cost_per_kwh
 
         self._power_setpoint: Optional[range] = None        # set in register()
         self._soc: Optional[range] = None                   # set in register()
+        self._abs_power: Optional[range] = None             # set in register()
         self._power_setpoint_variable_name = f"battery_power_setpoint_{self.id}"
         self._soc_variable_name = f"battery_soc_{self.id}"
+        self._abs_power_variable_name = f"battery_abs_power_{self.id}"
 
     def register(self, reg: VariableRegistry, T: int) -> None:
         self._power_setpoint = reg.register(self._power_setpoint_variable_name, T)
         self._soc = reg.register(self._soc_variable_name, T + 1)
+        self._abs_power = reg.register(self._abs_power_variable_name, T)
 
     def contribute(self, reg, constraints, objective, lb, ub, T, dt) -> None:
         if self.soc_init is None:
@@ -225,6 +230,23 @@ class BatteryModel(OptimizationComponent):
 
         dt_in_hours = dt.seconds / 3600
         n = objective.size
+
+        for t in range(T):
+            # Penalize |power| so both charging and discharging incur wear cost.
+            # abs_power[t] >= power_setpoint[t]  and  abs_power[t] >= -power_setpoint[t]
+            objective[self._abs_power[t]] = self.wearing_cost_per_kwh * dt_in_hours
+            lb[self._abs_power[t]] = 0.0
+            ub[self._abs_power[t]] = max(self.charge_max, self.discharge_max)
+
+            row = np.zeros(n)
+            row[self._abs_power[t]] = 1.0
+            row[self._power_setpoint[t]] = -1.0
+            constraints.add_ineq(row, 0.0, np.inf)   # abs_power >= power
+
+            row = np.zeros(n)
+            row[self._abs_power[t]] = 1.0
+            row[self._power_setpoint[t]] = 1.0
+            constraints.add_ineq(row, 0.0, np.inf)   # abs_power >= -power
 
         for t in range(T):
             lb[self._power_setpoint[t]] = -self.discharge_max
@@ -284,6 +306,7 @@ class EVModel(OptimizationComponent):
         target_soc: Optional[float] = None,
         target_timestep: Optional[int] = None,
         efficiency: float = 1.0,
+        wearing_cost_per_kwh: float = 0.0,
     ) -> None:
         super().__init__()
         self.capacity = capacity
@@ -294,6 +317,7 @@ class EVModel(OptimizationComponent):
         self.target_soc = target_soc
         self.target_timestep = target_timestep
         self.efficiency = efficiency
+        self.wearing_cost_per_kwh = wearing_cost_per_kwh
 
         self._power_setpoint: Optional[range] = None            # set in register()
         self._soc: Optional[range] = None                       # set in register()
@@ -303,6 +327,7 @@ class EVModel(OptimizationComponent):
     def register(self, reg: VariableRegistry, T: int) -> None:
         self._power_setpoint = reg.register(self._power_setpoint_variable_name, T)
         self._soc = reg.register(self._soc_variable_name, T + 1)
+        self._abs_power = reg.register(f"ev_abs_power_{self.id}", T)
 
     def contribute(self, reg, constraints, objective, lb, ub, T, dt) -> None:
         if self.soc_init is None:
@@ -310,6 +335,23 @@ class EVModel(OptimizationComponent):
 
         dt_in_hours = dt.seconds / 3600
         n = objective.size
+
+        for t in range(T):
+            # Penalise |power| so both charging and discharging incur wear cost.
+            # abs_power[t] >= power_setpoint[t]  and  abs_power[t] >= -power_setpoint[t]
+            objective[self._abs_power[t]] = self.wearing_cost_per_kwh * dt_in_hours
+            lb[self._abs_power[t]] = 0.0
+            ub[self._abs_power[t]] = max(self.charge_max, self.discharge_max)
+
+            row = np.zeros(n)
+            row[self._abs_power[t]] = 1.0
+            row[self._power_setpoint[t]] = -1.0
+            constraints.add_ineq(row, 0.0, np.inf)   # abs_power >= power
+
+            row = np.zeros(n)
+            row[self._abs_power[t]] = 1.0
+            row[self._power_setpoint[t]] = 1.0
+            constraints.add_ineq(row, 0.0, np.inf)   # abs_power >= -power
 
         for t in range(T):
             lb[self._power_setpoint[t]] = -self.discharge_max
@@ -419,6 +461,7 @@ class HeatPumpModel(OptimizationComponent):
         C_therm: float,
         lambda_: float,
         cop_eta: float = 0.4,
+        wearing_cost_per_kwh: float = 0.0,
     ) -> None:
         """
         Construct a HeatPumpModel.
@@ -431,6 +474,7 @@ class HeatPumpModel(OptimizationComponent):
             C_therm: the effective thermal capacity of the building (parameter of the thermal model) [kWh/K]
             lambda_: the heat transfer coefficient between indoor and outdoor environment (parameter of the thermal model) [kW/K]
             cop_eta: the efficiency factor for computing the COP (parameter of the COP model) [-]. Higher values imply a more efficient heat pump.
+            wearing_cost_per_kwh: the wearing cost of the heat pump per kWh of energy throughput [€/kWh]. This cost is added to the objective to account for device wear and tear.
         """
         super().__init__()
         self.temp_init: Optional[float] = None
@@ -441,6 +485,7 @@ class HeatPumpModel(OptimizationComponent):
         self.C_therm = C_therm
         self.lambda_ = lambda_
         self.cop_eta = cop_eta
+        self.wearing_cost_per_kwh = wearing_cost_per_kwh
 
         self._power_setpoint: Optional[range] = None            # set in register()
         self._temp: Optional[range] = None                      # set in register()
@@ -466,6 +511,9 @@ class HeatPumpModel(OptimizationComponent):
         cop = self._compute_cop(temp_out, T)
         n = objective.size
         dt_in_hours = dt.seconds / 3600
+
+        for t in range(T):
+            objective[self._power_setpoint[t]] = self.wearing_cost_per_kwh * dt_in_hours
 
         for t in range(T):
             lb[self._power_setpoint[t]] = 0.0

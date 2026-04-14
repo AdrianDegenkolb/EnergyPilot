@@ -63,13 +63,14 @@ def _run_mode(
     ev_state  = SyntheticState(15.0)
     hp_state  = SyntheticState(21.5)
 
-    bat_model = BatteryModel(capacity=10.0, charge_max=3.0, discharge_max=3.0, soc_min=1.0, efficiency=0.95)
-    ev_model  = EVModel(capacity=60.0, charge_max=11.0, discharge_max=11.0, target_soc=50.0, target_timestep=T_total + 1, efficiency=0.95)
+    bat_model = BatteryModel(capacity=10.0, charge_max=3.0, discharge_max=3.0, soc_min=1.0, efficiency=0.95, wearing_cost_per_kwh=0.01)
+    ev_model  = EVModel(capacity=60.0, charge_max=11.0, discharge_max=11.0, target_soc=50.0, target_timestep=T_total + 1, efficiency=0.95, wearing_cost_per_kwh=0.02)
     hp_model  = HeatPumpModel(
         temp_min=np.full(T_horizon, 20.0),
         temp_max=np.full(T_horizon, 23.0),
         temp_out_series=series["temp_out"],
         max_power=3.0, C_therm=10.0, lambda_=0.25, cop_eta=0.4,
+        wearing_cost_per_kwh=0.01,
     )
 
     bat_sensor, bat_actuator = bat_state.make_sensor_actuator()
